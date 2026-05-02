@@ -231,15 +231,12 @@ func (c *Client) Run() (err error) {
 	c.logger.Info("The handshake with the server was successful")
 
 	c.logger.Info("Starting the main VPN operation cycle")
-	c.wg.Add(3)
+	c.wg.Add(2)
 	go c.readerTunnel()
 	c.logger.Trace("Tunnel reader goroutine started")
 
 	go c.writerTunnel()
 	c.logger.Trace("Tunnel writer goroutine started")
-
-	go c.sender()
-	c.logger.Trace("Sender goroutine started")
 
 	return nil
 }
@@ -431,49 +428,27 @@ func (c *Client) readerTunnel() {
 	}
 }
 
-func (c *Client) sender() {
-	c.logger.Debug("Sender goroutine started")
-	defer func() {
-		c.logger.Trace("Sender goroutine finishing")
-		c.wg.Done()
-	}()
+func (c *Client) sendBuffer() {
+	c.bufferLock.Lock()
+	defer c.bufferLock.Unlock()
 
-	for {
-		select {
-		case <-c.stopCh:
-			c.logger.Debug("Sender received stop signal")
-			return
-		default:
-			c.bufferLock.Lock()
-
-			if len(c.packetBuffer) < c.sizeBatch {
-				c.bufferLock.Unlock()
-				c.logger.Trace("Sender: buffer size (%d) < batch size (%d), waiting", len(c.packetBuffer), c.sizeBatch)
-				continue
-			}
-
-			c.logger.Debug("Sender: processing batch of %d packets", len(c.packetBuffer))
-
-			for i, packet := range c.packetBuffer {
-				_, err := c.conn.Write(packet.GetRawData())
-				if err != nil {
-					c.logger.Error("Packet transmission error: %v", err)
-				}
-				c.logger.Trace("Sender: packet %d sent, size=%d bytes", i, len(packet.GetRawData()))
-			}
-
-			c.packetBuffer = []*packets.StreamingPacket{}
-
-			n, err := rand.Int(rand.Reader, big.NewInt(4))
-			if err != nil {
-				c.logger.Error("Error generating batch size: %v", err)
-			}
-
-			c.sizeBatch = int(n.Int64()) + 1
-			c.logger.Debug("Sender: batch size updated to %d", c.sizeBatch)
-			c.bufferLock.Unlock()
+	for i, packet := range c.packetBuffer {
+		_, err := c.conn.Write(packet.GetRawData())
+		if err != nil {
+			c.logger.Error("Packet transmission error: %v", err)
 		}
+		c.logger.Trace("Sender: packet %d sent, size=%d bytes", i, len(packet.GetRawData()))
 	}
+
+	n, err := rand.Int(rand.Reader, big.NewInt(4))
+	if err != nil {
+		c.logger.Error("Error generating batch size: %v", err)
+	}
+
+	c.sizeBatch = int(n.Int64()) + 1
+	c.logger.Debug("Sender: batch size updated to %d", c.sizeBatch)
+
+	c.packetBuffer = []*packets.StreamingPacket{}
 }
 
 func (c *Client) write(packet *packets.StreamingPacket) {
@@ -481,6 +456,10 @@ func (c *Client) write(packet *packets.StreamingPacket) {
 	defer c.bufferLock.Unlock()
 
 	c.packetBuffer = append(c.packetBuffer, packet)
+	if len(c.packetBuffer) >= c.sizeBatch {
+		go c.sendBuffer()
+	}
+
 	c.logger.Trace("Packet added to buffer, current buffer size: %d", len(c.packetBuffer))
 }
 
