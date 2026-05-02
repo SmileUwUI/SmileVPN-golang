@@ -280,7 +280,6 @@ func (c *Client) writerTunnel() {
 			if err != nil {
 				if err.Error() == "EOF" {
 					c.logger.Debug("Writer tunnel: EOF received, stopping client")
-					c.wg.Done()
 					c.Stop()
 					return
 				}
@@ -386,10 +385,14 @@ func (c *Client) readerTunnel() {
 
 			packet := packets.NewPlainPacket()
 
-			salt, err := crypto.RandomBytes(8)
-			if err != nil {
-				c.logger.Error("Salt generation error: %v", err)
-				continue
+			var salt []byte
+			if c.updateThroughSalt {
+				salt, err = crypto.RandomBytes(8)
+				if err != nil {
+					c.logger.Error("Salt generation error: %v", err)
+					continue
+				}
+
 			}
 			c.logger.Trace("Reader tunnel: salt generated (8 bytes)")
 

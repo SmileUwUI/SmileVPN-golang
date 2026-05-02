@@ -19,6 +19,7 @@ func main() {
 		host               string
 		port               int
 		loggerLevel        int
+		updateThroughSalt  bool
 	)
 
 	flag.StringVar(&usernameString, "u", "", "Hex username (short)")
@@ -29,6 +30,9 @@ func main() {
 
 	flag.StringVar(&initPasswordString, "i", "", "Hex initialization password (short)")
 	flag.StringVar(&initPasswordString, "init-password", "", "Hex initialization password")
+
+	flag.BoolVar(&updateThroughSalt, "U", false, "Update keys through salt (short)")
+	flag.BoolVar(&updateThroughSalt, "update-through-salt", false, "Update keys through salt")
 
 	flag.StringVar(&host, "h", "", "Host (short)")
 	flag.StringVar(&host, "host", "", "Host")
@@ -139,7 +143,7 @@ func main() {
 
 	log := logger.NewLogger(loggerLevel)
 
-	clientInstance, err := client.NewClient(host, port, initPasswordArray, usernameArray, passwordArray, false, log)
+	clientInstance, err := client.NewClient(host, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to create client: %v\n", err)
 		os.Exit(1)

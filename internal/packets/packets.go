@@ -137,6 +137,11 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	}
 
 	lengthCipherData := binary.BigEndian.Uint16(lengthCipherDataBytes)
+	lenRawData := len(s.rawData)
+
+	if lengthCipherData+3 > uint16(lenRawData) {
+		return errors.New("invalid length")
+	}
 	s.cipherData = s.rawData[5 : lengthCipherData+3]
 
 	s.plainData, err = crypto.DecryptChaCha20Poly1305(s.cipherData[12:], s.cipherData[:12], key)
