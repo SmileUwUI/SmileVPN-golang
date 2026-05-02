@@ -62,10 +62,8 @@ func (c *Client) Run() (err error) {
 
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		c.logger.Error("Failed to connect to server: %v", err)
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	c.logger.Trace("The connection was established successfully")
 
 	c.conn = conn.(*net.TCPConn)
 
@@ -85,53 +83,41 @@ func (c *Client) Run() (err error) {
 	packet.AddData(c.username[:])
 	packet.AddData(timestampBytes)
 
-	c.logger.Trace("Assembly a packet with a username")
 	err = packet.PackageAssembly(c.initPassword[:], []byte{}, []byte{}, false, false)
 	if err != nil {
-		c.logger.Error("An error occurred while creating the packet with the username: %v", err)
 		return err
 	}
 
-	c.logger.Trace("Sending a packet containing username")
 	if _, err = c.conn.Write(packet.GetRawData()); err != nil {
-		c.logger.Error("Error sending a packet with username: %v", err)
 		return err
 	}
 
-	c.logger.Trace("Reading the salt packet")
 	saltPacket, err := c.readPacket()
 	if err != nil {
-		c.logger.Error("Error reading the salt packet: %v", err)
 		return err
 	}
 
-	c.logger.Trace("Packet decoding and decryption")
 	err = saltPacket.DecodeAndDecrypt(c.initPassword[:], false)
 	if err != nil {
-		c.logger.Error("Error decoding and decrypting a salted packet: %v", err)
 		return err
 	}
 
 	firstSalt, err := saltPacket.GetSlicePlainData(0, 16)
 	if err != nil {
-		c.logger.Error("Error when attempting to retrieve the first salt: %v", err)
 		return fmt.Errorf("error when attempting to retrieve the first salt: %v", err)
 	}
 
 	secondSalt, err := saltPacket.GetSlicePlainData(16, 32)
 	if err != nil {
-		c.logger.Error("Error when attempting to retrieve the second salt: %v", err)
 		return fmt.Errorf("error when attempting to retrieve the second salt: %v", err)
 	}
 
-	c.logger.Trace("Calculating the send key")
 	c.hasher.Reset()
 	c.hasher.Write(c.password[:])
 	c.hasher.Write([]byte(":"))
 	c.hasher.Write(firstSalt)
 	c.sessionSentKey = c.hasher.Sum(nil)
 
-	c.logger.Trace("Calculating the recv key")
 	c.hasher.Reset()
 	c.hasher.Write(c.password[:])
 	c.hasher.Write([]byte(":"))
@@ -142,31 +128,23 @@ func (c *Client) Run() (err error) {
 	okPacket.AddData([]byte{0xFF})
 
 	curve := ecdh.X25519()
-	c.logger.Debug("Generating a keypair for ECDH")
 	privateClientKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
-		c.logger.Error("Error generating the keypair")
 		return err
 	}
 	publicClientKey := privateClientKey.PublicKey()
 
-	c.logger.Trace("Assembly the packet with connection establishment confirmation ")
 	err = okPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicClientKey.Bytes(), false, true)
 	if err != nil {
-		c.logger.Error("Error assembly a packet to confirm the connection setup: %v", err)
 		return err
 	}
 
-	c.logger.Trace("Sending a packet confirming that the connection has been established ")
 	if _, err = c.conn.Write(okPacket.GetRawData()); err != nil {
-		c.logger.Error("Error sending the connection establishment acknowledgment packet: %v", err)
 		return err
 	}
 
 	ipPacket, err := c.readPacket()
-	c.logger.Trace("Reading a packet containing an IP address ")
 	if err != nil {
-		c.logger.Error("Error reading the packet with IP address: %v", err)
 		if err.Error() == "EOF" {
 			return err
 		}
@@ -175,33 +153,26 @@ func (c *Client) Run() (err error) {
 
 	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey, false)
 	if err != nil {
-		c.logger.Error("Error decoding and decrypting a packet containing the server's IP address and public key: %v", err)
 		return err
 	}
 
 	ipBytes, err := ipPacket.GetSlicePlainData(0, 4)
 	if err != nil {
-		c.logger.Error("Error when attempting to retrieve the IP address: %v", err)
 		return fmt.Errorf("error when attempting to retrieve the IP address: %v", err)
 	}
 
-	c.logger.Debug("Parsing the server's public key")
 	publicServerKey, err := curve.NewPublicKey(ipPacket.GetPublicKey())
 	if err != nil {
-		c.logger.Error("Error parsing the server's public key: %v", err)
 		return err
 	}
 
-	c.logger.Debug("Conducting the ECDH")
 	secret, err := privateClientKey.ECDH(publicServerKey)
 	if err != nil {
-		c.logger.Error("ECDH execution error: %v", err)
 		return err
 	}
 	c.computeNextSessionRecvKey(secret)
 	c.computeNextSessionSentKey(secret)
 
-	c.logger.Debug("Creating a TUN interface")
 	tun, err := tunnel.NewTunnel(
 		"smile-tun0",
 		1500,
@@ -210,7 +181,6 @@ func (c *Client) Run() (err error) {
 	)
 
 	if err != nil {
-		c.logger.Error("Failed to create tunnel: %v", err)
 		return fmt.Errorf("error create tunnel: %v", err)
 	}
 
@@ -218,26 +188,19 @@ func (c *Client) Run() (err error) {
 
 	c.wg.Add(3)
 	go c.readerTunnel()
-	c.logger.Debug("Launch the goroutine to read the tunnel")
 
 	go c.writerTunnel()
-	c.logger.Debug("A daemon has been launched to read packets from the server and write them to the tunnel")
 
 	go c.sender()
-	c.logger.Debug("Launched a goroutine to send packets to the server.")
 
 	return nil
 }
 
 func (c *Client) Stop() {
 	close(c.stopCh)
-	c.logger.Debug("Wait for all goroutines to complete")
 	c.wg.Wait()
-	c.logger.Debug("All goroutines are complete")
-	c.logger.Debug("Close tunnel")
 	err := (*c.tunnel).Close()
 	if err != nil {
-		c.logger.Error("An error occurred while closing the tunnel: %v", err)
 	}
 }
 
@@ -249,10 +212,8 @@ func (c *Client) writerTunnel() {
 		case <-c.stopCh:
 			return
 		default:
-			c.logger.Trace("Reading a packet from socket #%d", c.countRecv)
 			packet, err := c.readPacket()
 			if err != nil {
-				c.logger.Error("Failed to read packet: %v", err)
 				if err.Error() == "EOF" {
 					c.Stop()
 					return
@@ -263,38 +224,32 @@ func (c *Client) writerTunnel() {
 
 			err = packet.DecodeAndDecrypt(c.sessionRecvKey, true)
 			if err != nil {
-				c.logger.Error("Failed to decrypt packet: %v", err)
 				continue
 			}
 
-			c.logger.Trace("Send packet #%d through the tunnel", c.countRecv)
 			_, err = (*c.tunnel).Write(packet.GetPlainData())
 			if err != nil {
-				c.logger.Error("Failed to write packet in tun: %v", err)
+				continue
 			}
 
 			c.computeNextSessionRecvKey(packet.GetSalt())
 
 			if packet.GetEcdhFlag() {
-				c.logger.Debug("A new round of the ECDH has begun")
 
 				var publicServerKey *ecdh.PublicKey
 				curve := ecdh.X25519()
 				publicServerKey, err = curve.NewPublicKey(packet.GetPublicKey())
 				if err != nil {
-					c.logger.Error("Error parsing the server's public key: %v", err)
 					continue
 				}
 
 				privateKey, err := curve.GenerateKey(rand.Reader)
 				if err != nil {
-					c.logger.Error("Error generating the keypair: %v", err)
 					continue
 				}
 
 				secret, err = privateKey.ECDH(publicServerKey)
 				if err != nil {
-					c.logger.Error("ECDH execution error: %v", err)
 					return
 				}
 				c.ephemeralPublicClientKey = privateKey.PublicKey()
@@ -310,13 +265,11 @@ func (c *Client) readerTunnel() {
 	defer c.wg.Done()
 
 	if err := (*c.tunnel).Up([]string{c.host}); err != nil {
-		c.logger.Error("Failed to bring TUN interface up: %v", err)
 		return
 	}
 	defer func() {
 		err := (*c.tunnel).Down()
 		if err != nil {
-			c.logger.Error("Error setting the tunnel to DOWN status: %v", err)
 		}
 	}()
 
@@ -329,17 +282,14 @@ func (c *Client) readerTunnel() {
 		default:
 			n, err := (*c.tunnel).Read(rawPacket)
 			if err != nil {
-				c.logger.Error("Failed to read from tunnel: %v", err)
 				return
 			}
-			c.logger.Trace("Read packet from tunnel #%d", c.countSent)
 			c.countSent++
 
 			packet := packets.NewPlainPacket()
 
 			salt, err := crypto.RandomBytes(8)
 			if err != nil {
-				c.logger.Error("Error generating random bytes: %v", err)
 			}
 
 			packet.AddData(rawPacket[:n])
@@ -350,11 +300,9 @@ func (c *Client) readerTunnel() {
 				err = packet.PackageAssembly(c.sessionSentKey, salt, []byte{}, false, false)
 			}
 			if err != nil {
-				c.logger.Error("Error while building the package: %v", err)
 				continue
 			}
 
-			c.logger.Trace("Sending a packet to server number #%d", c.countSent)
 			c.write(packet)
 
 			c.computeNextSessionSentKey(salt)
@@ -383,17 +331,14 @@ func (c *Client) sender() {
 			for _, packet := range c.packetBuffer {
 				_, err := c.conn.Write(packet.GetRawData())
 				if err != nil {
-					c.logger.Error("Error while writing: %v", err)
 				}
 			}
 			c.packetBuffer = []*packets.StreamingPacket{}
 			n, err := rand.Int(rand.Reader, big.NewInt(4))
 			if err != nil {
-				c.logger.Error("Error generating a random batch size: %v", err)
 			}
 
 			c.sizeBatch = int(n.Int64()) + 1
-			c.logger.Trace("Next size of batch: %d", c.sizeBatch)
 			c.bufferLock.Unlock()
 		}
 	}

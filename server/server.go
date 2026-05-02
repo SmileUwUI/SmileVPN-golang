@@ -33,7 +33,6 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config, usersDB *users.Users, logger *logger.Logger) (server *Server, err error) {
-	logger.Info("Creating new server instance")
 	ippool, err := NewIPPool("10.8.83.0/24")
 	if err != nil {
 		return nil, fmt.Errorf("error creating ip pool: %v", err)
@@ -54,7 +53,6 @@ func (s *Server) Start() error {
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		s.logger.Error("Failed to start TCP server on %s: %v", addr, err)
 		return fmt.Errorf("failed to start TCP server: %w", err)
 	}
 
@@ -68,7 +66,6 @@ func (s *Server) Start() error {
 	)
 
 	if err != nil {
-		s.logger.Error("Failed to create tunnel: %v", err)
 		return err
 	}
 
@@ -76,7 +73,6 @@ func (s *Server) Start() error {
 
 	err = s.tunnel.Up([]string{})
 	if err != nil {
-		s.logger.Error("Failed to up tunnel: %v", err)
 		return err
 	}
 
@@ -101,12 +97,9 @@ func (s *Server) acceptConnections() {
 				case <-s.stopCh:
 					return
 				default:
-					s.logger.Error("Failed to accept connection: %v", err)
 					continue
 				}
 			}
-			addr := conn.RemoteAddr().String()
-			s.logger.Info("New connection from %s", addr)
 
 			s.mu.RLock()
 			clientCount := int(s.clientCount)
@@ -114,7 +107,6 @@ func (s *Server) acceptConnections() {
 			s.mu.RUnlock()
 
 			if clientCount >= maxClients {
-				s.logger.Error("Connection from %s was rejected because the server is full", addr)
 				conn.Close()
 				continue
 			}
@@ -134,7 +126,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	connTCP := conn.(*net.TCPConn)
-	addr := connTCP.RemoteAddr().String()
 
 	now := time.Now()
 
@@ -156,14 +147,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	err := client.handshakeStage1(s.config.InitPassword, s.users)
 	if err != nil {
-		s.logger.Error("Error during handshake from %s: %v", addr, err)
 		return
 	}
 
 	clientIP := s.ipPool.AcquireIP()
 	err = client.handshakeStage2(&clientIP)
 	if err != nil {
-		s.logger.Error("Error during handshake from %s: %v", addr, err)
 		s.ipPool.ReleaseIP(clientIP)
 		return
 	}
@@ -172,7 +161,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	err = conn.SetDeadline(time.Time{})
 	if err != nil {
-		s.logger.Error("%v", err)
 		return
 	}
 
@@ -184,7 +172,6 @@ func (s *Server) tunnelReader() {
 		rawPacket := make([]byte, 65535)
 		n, err := s.tunnel.Read(rawPacket)
 		if err != nil {
-			s.logger.Error("Failed to read from tunnel: %v", err)
 			continue
 		}
 		rawPacket = rawPacket[:n]
@@ -207,7 +194,6 @@ func (s *Server) tunnelReader() {
 
 		salt, err := crypto.RandomBytes(8)
 		if err != nil {
-			s.logger.Error("Salt generation error: %v", err)
 			continue
 		}
 
@@ -218,7 +204,6 @@ func (s *Server) tunnelReader() {
 			curve := ecdh.X25519()
 			privateKey, err := curve.GenerateKey(rand.Reader)
 			if err != nil {
-				s.logger.Error("Error generating the keypair")
 				return
 			}
 
@@ -226,14 +211,12 @@ func (s *Server) tunnelReader() {
 			err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true)
 
 			if err != nil {
-				s.logger.Error("Error assembly a packet: %v", err)
 				continue
 			}
 		} else {
 			err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false)
 
 			if err != nil {
-				s.logger.Error("Error assembly a packet: %v", err)
 				continue
 			}
 		}
@@ -245,7 +228,6 @@ func (s *Server) tunnelReader() {
 				delete(s.clients, client.localIP.String())
 				continue
 			}
-			s.logger.Error("Error write: %v", err)
 			continue
 		}
 
@@ -260,7 +242,6 @@ func (s *Server) tunnelReader() {
 
 func (s *Server) handleClient(client *Client) {
 	defer client.conn.Close()
-	clientAddr := client.addr
 
 	for {
 		select {
@@ -275,7 +256,6 @@ func (s *Server) handleClient(client *Client) {
 					return
 				}
 
-				s.logger.Error("%v", err)
 				if err.Error() == "EOF" {
 					s.ipPool.ReleaseIP(*client.localIP)
 					delete(s.clients, client.localIP.String())
@@ -286,7 +266,6 @@ func (s *Server) handleClient(client *Client) {
 			err = packet.DecodeAndDecrypt(client.sessionRecvKey, true)
 
 			if err != nil {
-				s.logger.Error("%v", err)
 				continue
 			}
 
@@ -294,17 +273,14 @@ func (s *Server) handleClient(client *Client) {
 			client.computeNextSessionRecvKey(packet.GetSalt())
 
 			if packet.GetEcdhFlag() && client.ephemeralPrivateServerKey != nil {
-				s.logger.Debug("A new round of the ECDH has begun")
 				curve := ecdh.X25519()
 				clientPublicKey, err := curve.NewPublicKey(packet.GetPublicKey())
 				if err != nil {
-					s.logger.Error("Error parsing the client's public key: %v", err)
 					return
 				}
 
 				secret, err := client.ephemeralPrivateServerKey.ECDH(clientPublicKey)
 				if err != nil {
-					s.logger.Error("ECDH execution error: %v", err)
 					return
 				}
 				client.ephemeralPrivateServerKey = nil
@@ -331,7 +307,6 @@ func (s *Server) handleClient(client *Client) {
 
 			ipSrc, err := packet.GetSlicePlainData(12, 16)
 			if err != nil {
-				s.logger.Error("Error retrieving source IP address: %v", err)
 				continue
 			}
 			if fmt.Sprintf("%d.%d.%d.%d", ipSrc[0], ipSrc[1], ipSrc[2], ipSrc[3]) != client.localIP.String() {
@@ -340,14 +315,13 @@ func (s *Server) handleClient(client *Client) {
 
 			_, err = s.tunnel.Write(packet.GetPlainData())
 			if err != nil {
-				s.logger.Error("Write error to TUN interface for %s: %v", clientAddr, err)
+				continue
 			}
 		}
 	}
 }
 
 func (s *Server) cleanupIdleClients() {
-	s.logger.Debug("Cleanup idle clients loop started")
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
