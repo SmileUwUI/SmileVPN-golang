@@ -347,7 +347,7 @@ func (c *Client) readerTunnel() {
 	}()
 
 	c.logger.Debug("Bringing tunnel up")
-	if err := (*c.tunnel).Up([]string{c.host}); err != nil {
+	if err := (*c.tunnel).Up([]string{c.host}, true); err != nil {
 		c.logger.Error("Tunnel upping error: %v", err)
 		return
 	}

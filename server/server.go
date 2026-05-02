@@ -82,7 +82,7 @@ func (s *Server) Start() error {
 	s.tunnel = tun.(*tunnel.LinuxTunnel)
 	s.logger.Debug("Tunnel interface tun0 created with MTU=1500, IP=10.8.83.1/24")
 
-	err = s.tunnel.Up([]string{})
+	err = s.tunnel.Up([]string{}, false)
 	if err != nil {
 		s.logger.Error("Failed to bring tunnel up: %v", err)
 		return err

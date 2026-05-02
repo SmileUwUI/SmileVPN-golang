@@ -214,7 +214,7 @@ func (t *LinuxTunnel) DeleteRoutes(routes []*net.IPNet) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Up(excludeIPs []string) error {
+func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute bool) error {
 	routeInfo, err := getDefaultRouteNetlink()
 	if err != nil {
 		return fmt.Errorf("error retrieving route information: %w", err)
@@ -241,8 +241,10 @@ func (t *LinuxTunnel) Up(excludeIPs []string) error {
 		return err
 	}
 
-	if err := t.SetupDefaultRoute(); err != nil {
-		return err
+	if setDefaultRoute {
+		if err := t.SetupDefaultRoute(); err != nil {
+			return err
+		}
 	}
 
 	t.running = true
