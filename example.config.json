@@ -3,5 +3,6 @@
     "port": 16020,
     "max_clients": 128,
     "init_password": "0000000000000000000000000000000000000000000000000000000000000000",
-    "users_path": "/home/test/users"
+    "users_path": "/home/test/users",
+    "update_through_salt": false
 }

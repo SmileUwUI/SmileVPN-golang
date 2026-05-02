@@ -242,12 +242,16 @@ func (s *Server) tunnelReader() {
 			s.logger.Trace("ECDH lock acquired for client %s", client.addr)
 		}
 
-		salt, err := crypto.RandomBytes(8)
-		if err != nil {
-			s.logger.Error("Failed to generate salt for client %s: %v", client.addr, err)
-			continue
+		salt := []byte{}
+		if s.config.UpdateThroughSalt {
+			salt, err = crypto.RandomBytes(8)
+			if err != nil {
+				s.logger.Error("Failed to generate salt for client %s: %v", client.addr, err)
+				continue
+			}
+			s.logger.Trace("Salt generated for client %s: %x", client.addr, salt)
+
 		}
-		s.logger.Trace("Salt generated for client %s: %x", client.addr, salt)
 
 		packet := packets.NewPlainPacket()
 		packet.AddData(rawPacket)
@@ -302,7 +306,9 @@ func (s *Server) tunnelReader() {
 			client.roundECDHLock = make(chan struct{}, 1)
 		}
 
-		client.computeNextSessionSentKey(salt)
+		if s.config.UpdateThroughSalt {
+			client.computeNextSessionSentKey(salt)
+		}
 		client.countSent++
 		s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent)
 	}
@@ -341,7 +347,7 @@ func (s *Server) handleClient(client *Client) {
 			}
 			s.logger.Trace("Packet received from client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-			err = packet.DecodeAndDecrypt(client.sessionRecvKey, true)
+			err = packet.DecodeAndDecrypt(client.sessionRecvKey)
 			if err != nil {
 				s.logger.Error("Failed to decrypt packet from client %s: %v", client.addr, err)
 				continue
@@ -349,8 +355,11 @@ func (s *Server) handleClient(client *Client) {
 			s.logger.Trace("Packet decrypted successfully for client %s", client.addr)
 
 			client.countRecv++
-			client.computeNextSessionRecvKey(packet.GetSalt())
-			s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv)
+			salt := packet.GetSalt()
+			if len(salt) != 0 {
+				client.computeNextSessionRecvKey(salt)
+				s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv)
+			}
 
 			if packet.GetEcdhFlag() && client.ephemeralPrivateServerKey != nil {
 				s.logger.Debug("Processing ECDH rekey from client %s", client.addr)

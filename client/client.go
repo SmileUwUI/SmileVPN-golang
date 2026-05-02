@@ -33,6 +33,7 @@ type Client struct {
 	logger                   *logger.Logger
 	countRecv                uint32
 	countSent                uint32
+	updateThroughSalt        bool
 	ephemeralPublicClientKey *ecdh.PublicKey
 	hasher                   hash.Hash
 	hasherLock               sync.Mutex
@@ -42,19 +43,20 @@ type Client struct {
 	stopCh chan struct{}
 }
 
-func NewClient(host string, port int, initPassword [32]byte, username, password [16]byte, logger *logger.Logger) (client *Client, err error) {
+func NewClient(host string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt bool, logger *logger.Logger) (client *Client, err error) {
 	logger.Trace("Creating new client instance for %s:%d", host, port)
 	return &Client{
-		host:         host,
-		port:         port,
-		initPassword: initPassword,
-		username:     username,
-		password:     password,
-		logger:       logger,
-		packetBuffer: []*packets.StreamingPacket{},
-		sizeBatch:    1,
-		hasher:       sha256.New(),
-		stopCh:       make(chan struct{}),
+		host:              host,
+		port:              port,
+		initPassword:      initPassword,
+		username:          username,
+		password:          password,
+		logger:            logger,
+		packetBuffer:      []*packets.StreamingPacket{},
+		updateThroughSalt: updateThroughSalt,
+		sizeBatch:         1,
+		hasher:            sha256.New(),
+		stopCh:            make(chan struct{}),
 	}, nil
 }
 
@@ -112,7 +114,7 @@ func (c *Client) Run() (err error) {
 	}
 	c.logger.Trace("Salt packet received")
 
-	err = saltPacket.DecodeAndDecrypt(c.initPassword[:], false)
+	err = saltPacket.DecodeAndDecrypt(c.initPassword[:])
 	if err != nil {
 		c.logger.Error("Error decoding or decrypting the salt packet: %v", err)
 		return err
@@ -179,7 +181,7 @@ func (c *Client) Run() (err error) {
 	}
 	c.logger.Trace("IP packet received")
 
-	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey, false)
+	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey)
 	if err != nil {
 		c.logger.Error("Error decoding or decrypting the ip packet: %v", err)
 		return err
@@ -278,7 +280,6 @@ func (c *Client) writerTunnel() {
 			if err != nil {
 				if err.Error() == "EOF" {
 					c.logger.Debug("Writer tunnel: EOF received, stopping client")
-					c.wg.Done()
 					c.Stop()
 					return
 				}
@@ -288,7 +289,7 @@ func (c *Client) writerTunnel() {
 			c.countRecv++
 			c.logger.Trace("Writer tunnel: packet received, countRecv=%d", c.countRecv)
 
-			err = packet.DecodeAndDecrypt(c.sessionRecvKey, true)
+			err = packet.DecodeAndDecrypt(c.sessionRecvKey)
 			if err != nil {
 				c.logger.Error("Error decoding or decrypting the packet: %v", err)
 				continue
@@ -302,7 +303,10 @@ func (c *Client) writerTunnel() {
 			}
 			c.logger.Trace("Writer tunnel: packet written to tunnel")
 
-			c.computeNextSessionRecvKey(packet.GetSalt())
+			salt := packet.GetSalt()
+			if len(salt) != 0 {
+				c.computeNextSessionRecvKey(salt)
+			}
 			c.logger.Trace("Writer tunnel: session recv key updated with salt")
 
 			if packet.GetEcdhFlag() {
@@ -381,10 +385,14 @@ func (c *Client) readerTunnel() {
 
 			packet := packets.NewPlainPacket()
 
-			salt, err := crypto.RandomBytes(8)
-			if err != nil {
-				c.logger.Error("Salt generation error: %v", err)
-				continue
+			var salt []byte
+			if c.updateThroughSalt {
+				salt, err = crypto.RandomBytes(8)
+				if err != nil {
+					c.logger.Error("Salt generation error: %v", err)
+					continue
+				}
+
 			}
 			c.logger.Trace("Reader tunnel: salt generated (8 bytes)")
 
@@ -408,7 +416,9 @@ func (c *Client) readerTunnel() {
 			c.write(packet)
 			c.logger.Trace("Reader tunnel: packet queued for sending")
 
-			c.computeNextSessionSentKey(salt)
+			if c.updateThroughSalt {
+				c.computeNextSessionSentKey(salt)
+			}
 			c.logger.Trace("Reader tunnel: session sent key updated with salt")
 
 			if packet.GetEcdhFlag() {
