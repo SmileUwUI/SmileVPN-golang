@@ -47,17 +47,13 @@ func main() {
 
 	serverInstance, err := server.NewServer(configInstance, usersInstance, logger)
 	if err != nil {
-		logger.Error("Failed to create server: %v", err)
 		os.Exit(1)
 	}
 
 	err = serverInstance.Start()
 	if err != nil {
-		logger.Error("Failed to start server: %v", err)
 		os.Exit(1)
 	}
-
-	logger.Info("Server started successfully. Press Ctrl+C to stop")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan,
