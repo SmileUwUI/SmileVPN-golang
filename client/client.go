@@ -60,13 +60,16 @@ func NewClient(host string, port int, initPassword [32]byte, username, password 
 func (c *Client) Run() (err error) {
 	addr := net.JoinHostPort(c.host, fmt.Sprintf("%d", c.port))
 
+	c.logger.Info("Connected to the server at %s", addr)
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
+		c.logger.Error("Server connection error: %v", err)
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-
 	c.conn = conn.(*net.TCPConn)
+	c.logger.Info("Connection established")
 
+	c.logger.Info("A handshake with the server has begun")
 	c.sessionRecvKey = c.initPassword[:]
 	c.sessionSentKey = c.initPassword[:]
 
@@ -85,30 +88,36 @@ func (c *Client) Run() (err error) {
 
 	err = packet.PackageAssembly(c.initPassword[:], []byte{}, []byte{}, false, false)
 	if err != nil {
+		c.logger.Error("Assembly error in the username packet: %v", err)
 		return err
 	}
 
 	if _, err = c.conn.Write(packet.GetRawData()); err != nil {
+		c.logger.Error("Error sending a packet with the username: %v", err)
 		return err
 	}
 
 	saltPacket, err := c.readPacket()
 	if err != nil {
+		c.logger.Error("Error reading the salt packet: %v", err)
 		return err
 	}
 
 	err = saltPacket.DecodeAndDecrypt(c.initPassword[:], false)
 	if err != nil {
+		c.logger.Error("Error decoding or decrypting the salt packet: %v", err)
 		return err
 	}
 
 	firstSalt, err := saltPacket.GetSlicePlainData(0, 16)
 	if err != nil {
+		c.logger.Error("Error retrieving the first 16 bytes from the salt packet (first salt): %v", err)
 		return fmt.Errorf("error when attempting to retrieve the first salt: %v", err)
 	}
 
 	secondSalt, err := saltPacket.GetSlicePlainData(16, 32)
 	if err != nil {
+		c.logger.Error("Error retrieving the second 16 bytes from the salt packet (second salt): %v", err)
 		return fmt.Errorf("error when attempting to retrieve the second salt: %v", err)
 	}
 
@@ -130,44 +139,49 @@ func (c *Client) Run() (err error) {
 	curve := ecdh.X25519()
 	privateClientKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
+		c.logger.Error("Error generating a key pair for ECDH: %v", err)
 		return err
 	}
 	publicClientKey := privateClientKey.PublicKey()
 
 	err = okPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicClientKey.Bytes(), false, true)
 	if err != nil {
+		c.logger.Error("Assembly error in the packet with connection verification and public key for ECDH: %v", err)
 		return err
 	}
 
 	if _, err = c.conn.Write(okPacket.GetRawData()); err != nil {
+		c.logger.Error("Error sending a packet containing the connection confirmation and public key for ECDH: %v", err)
 		return err
 	}
 
 	ipPacket, err := c.readPacket()
 	if err != nil {
-		if err.Error() == "EOF" {
-			return err
-		}
+		c.logger.Error("Error reading the ip packet: %v", err)
 		return err
 	}
 
 	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey, false)
 	if err != nil {
+		c.logger.Error("Error decoding or decrypting the ip packet: %v", err)
 		return err
 	}
 
 	ipBytes, err := ipPacket.GetSlicePlainData(0, 4)
 	if err != nil {
+		c.logger.Error("Error retrieving the first 4 bytes (IP address) from the packet with IP: %v", err)
 		return fmt.Errorf("error when attempting to retrieve the IP address: %v", err)
 	}
 
 	publicServerKey, err := curve.NewPublicKey(ipPacket.GetPublicKey())
 	if err != nil {
+		c.logger.Error("Error parsing the server's public key for ECDH: %v", err)
 		return err
 	}
 
 	secret, err := privateClientKey.ECDH(publicServerKey)
 	if err != nil {
+		c.logger.Error("ECDH execution error: %v", err)
 		return err
 	}
 	c.computeNextSessionRecvKey(secret)
@@ -181,11 +195,15 @@ func (c *Client) Run() (err error) {
 	)
 
 	if err != nil {
+		c.logger.Error("Error create tunnel: %v", err)
 		return fmt.Errorf("error create tunnel: %v", err)
 	}
 
 	c.tunnel = &tun
 
+	c.logger.Info("The handshake with the server was successful")
+
+	c.logger.Info("Starting the main VPN operation cycle")
 	c.wg.Add(3)
 	go c.readerTunnel()
 
@@ -196,12 +214,16 @@ func (c *Client) Run() (err error) {
 	return nil
 }
 
-func (c *Client) Stop() {
+func (c *Client) Stop() error {
 	close(c.stopCh)
 	c.wg.Wait()
 	err := (*c.tunnel).Close()
 	if err != nil {
+		return err
 	}
+	c.logger.Info("The client has been updated")
+
+	return nil
 }
 
 func (c *Client) writerTunnel() {
@@ -215,6 +237,7 @@ func (c *Client) writerTunnel() {
 			packet, err := c.readPacket()
 			if err != nil {
 				if err.Error() == "EOF" {
+					c.wg.Done()
 					c.Stop()
 					return
 				}
@@ -224,11 +247,13 @@ func (c *Client) writerTunnel() {
 
 			err = packet.DecodeAndDecrypt(c.sessionRecvKey, true)
 			if err != nil {
+				c.logger.Error("Error decoding or decrypting the packet: %v", err)
 				continue
 			}
 
 			_, err = (*c.tunnel).Write(packet.GetPlainData())
 			if err != nil {
+				c.logger.Error("Error writing a packet to the tunnel: %v", err)
 				continue
 			}
 
@@ -240,16 +265,19 @@ func (c *Client) writerTunnel() {
 				curve := ecdh.X25519()
 				publicServerKey, err = curve.NewPublicKey(packet.GetPublicKey())
 				if err != nil {
+					c.logger.Error("Error parsing the server's public key for ECDH: %v", err)
 					continue
 				}
 
 				privateKey, err := curve.GenerateKey(rand.Reader)
 				if err != nil {
+					c.logger.Error("Error generating a key pair for ECDH: %v", err)
 					continue
 				}
 
 				secret, err = privateKey.ECDH(publicServerKey)
 				if err != nil {
+					c.logger.Error("ECDH execution error: %v", err)
 					return
 				}
 				c.ephemeralPublicClientKey = privateKey.PublicKey()
@@ -265,11 +293,13 @@ func (c *Client) readerTunnel() {
 	defer c.wg.Done()
 
 	if err := (*c.tunnel).Up([]string{c.host}); err != nil {
+		c.logger.Error("Tunnel upping error: %v", err)
 		return
 	}
 	defer func() {
 		err := (*c.tunnel).Down()
 		if err != nil {
+			c.logger.Error("Tunnel down failed: %v", err)
 		}
 	}()
 
@@ -282,6 +312,7 @@ func (c *Client) readerTunnel() {
 		default:
 			n, err := (*c.tunnel).Read(rawPacket)
 			if err != nil {
+				c.logger.Error("Error reading a packet from the tunnel: %v", err)
 				return
 			}
 			c.countSent++
@@ -290,6 +321,8 @@ func (c *Client) readerTunnel() {
 
 			salt, err := crypto.RandomBytes(8)
 			if err != nil {
+				c.logger.Error("Salt generation error: %v", err)
+				continue
 			}
 
 			packet.AddData(rawPacket[:n])
@@ -300,6 +333,7 @@ func (c *Client) readerTunnel() {
 				err = packet.PackageAssembly(c.sessionSentKey, salt, []byte{}, false, false)
 			}
 			if err != nil {
+				c.logger.Error("Assembly error in the packet: %v", err)
 				continue
 			}
 
@@ -331,11 +365,13 @@ func (c *Client) sender() {
 			for _, packet := range c.packetBuffer {
 				_, err := c.conn.Write(packet.GetRawData())
 				if err != nil {
+					c.logger.Error("Packet transmission error: %v", err)
 				}
 			}
 			c.packetBuffer = []*packets.StreamingPacket{}
 			n, err := rand.Int(rand.Reader, big.NewInt(4))
 			if err != nil {
+				c.logger.Error("Error generating batch size: %v", err)
 			}
 
 			c.sizeBatch = int(n.Int64()) + 1
