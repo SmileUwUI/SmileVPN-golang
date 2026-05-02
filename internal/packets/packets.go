@@ -100,12 +100,15 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 		return fmt.Errorf("error generating random bytes: %v", err)
 	}
 
-	flags := flagsBytes[0] & 0b11111100
+	flags := flagsBytes[0] & 0b11111000
 	if s.fakeFlag {
 		flags = flags | 0b00000001
 	}
 	if s.ecdhFlag {
 		flags = flags | 0b00000010
+	}
+	if len(salt) != 0 {
+		flags = flags | 0b00000100
 	}
 
 	s.rawData[0] = s.rawData[0] ^ key[0]
@@ -117,7 +120,7 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 	return nil
 }
 
-func (s *StreamingPacket) DecodeAndDecrypt(key []byte, withSalt bool) (err error) {
+func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	if s.typePacket != RawPacket {
 		return errors.New("this operation is available only for the RawPacket package type")
 	}
@@ -142,7 +145,7 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte, withSalt bool) (err error
 	}
 
 	offsetPlainData := 0
-	if withSalt {
+	if (flags>>2)&1 == 1 {
 		s.salt = s.plainData[:8]
 		offsetPlainData += 8
 	}

@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Host         string   `json:"host"`
-	Port         int      `json:"port"`
-	MaxClients   int      `json:"max_clients"`
-	InitPassword [32]byte `json:"init_password"`
-	UsersPath    string   `json:"users_path"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	MaxClients        int      `json:"max_clients"`
+	InitPassword      [32]byte `json:"init_password"`
+	UsersPath         string   `json:"users_path"`
+	UpdateThroughSalt bool     `json:"update_through_salt"`
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {

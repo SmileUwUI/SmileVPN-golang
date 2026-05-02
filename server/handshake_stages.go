@@ -35,7 +35,7 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	}
 	c.logger.Trace("Handshake stage 1: username packet received from client %s, size=%d bytes", c.addr, len(usernamePacket.GetRawData()))
 
-	err = usernamePacket.DecodeAndDecrypt(initPassword[:], false)
+	err = usernamePacket.DecodeAndDecrypt(initPassword[:])
 	if err != nil {
 		c.logger.Error("Failed to decrypt username packet from client %s: %v", c.addr, err)
 		c.conn.Close()
@@ -157,7 +157,7 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	}
 	c.logger.Trace("Handshake stage 2: packet received from client %s, size=%d bytes", c.addr, len(packet.GetRawData()))
 
-	err = packet.DecodeAndDecrypt(c.sessionRecvKey, false)
+	err = packet.DecodeAndDecrypt(c.sessionRecvKey)
 	if err != nil {
 		c.logger.Error("Failed to decrypt stage 2 packet from client %s: %v", c.addr, err)
 		c.conn.Close()

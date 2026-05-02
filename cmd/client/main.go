@@ -139,7 +139,7 @@ func main() {
 
 	log := logger.NewLogger(loggerLevel)
 
-	clientInstance, err := client.NewClient(host, port, initPasswordArray, usernameArray, passwordArray, log)
+	clientInstance, err := client.NewClient(host, port, initPasswordArray, usernameArray, passwordArray, false, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to create client: %v\n", err)
 		os.Exit(1)
