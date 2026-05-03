@@ -95,7 +95,7 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 
 	saltPacket := packets.NewPlainPacket()
 	saltPacket.AddData(salt)
-	err = saltPacket.PackageAssembly(initPassword[:], []byte{}, []byte{}, false, false)
+	err = saltPacket.PackageAssembly(initPassword[:], []byte{}, []byte{}, false, false, false)
 	if err != nil {
 		c.logger.Error("Failed to package salt packet for client %s: %v", c.addr, err)
 		c.conn.Close()
@@ -206,7 +206,7 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	ipPacket.AddData(clientIP.To4())
 	c.logger.Trace("Handshake stage 2: IP %s added to packet for client %s", clientIP.String(), c.addr)
 
-	err = ipPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicServerKey.Bytes(), false, true)
+	err = ipPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicServerKey.Bytes(), false, true, false)
 	if err != nil {
 		c.logger.Error("Failed to package IP packet for client %s: %v", c.addr, err)
 		c.conn.Close()

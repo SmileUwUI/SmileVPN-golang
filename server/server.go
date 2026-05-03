@@ -273,14 +273,14 @@ func (s *Server) tunnelReader() {
 			s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
 
 			client.ephemeralPrivateServerKey = privateKey
-			err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true)
+			err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true, false)
 			if err != nil {
 				s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 				continue
 			}
 			s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 		} else {
-			err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false)
+			err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false, false)
 			if err != nil {
 				s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 				continue
@@ -293,6 +293,7 @@ func (s *Server) tunnelReader() {
 			if errors.Is(err, net.ErrClosed) {
 				s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
 				s.ipPool.ReleaseIP(*client.localIP)
+				client.Close()
 				delete(s.clients, client.localIP.String())
 				continue
 			}
@@ -332,6 +333,7 @@ func (s *Server) handleClient(client *Client) {
 				if errors.Is(err, net.ErrClosed) {
 					s.logger.Info("Client %s connection closed (net.ErrClosed), releasing IP %s", client.addr, client.localIP.String())
 					s.ipPool.ReleaseIP(*client.localIP)
+					client.Close()
 					delete(s.clients, client.localIP.String())
 					return
 				}
@@ -339,6 +341,7 @@ func (s *Server) handleClient(client *Client) {
 				if err.Error() == "EOF" {
 					s.logger.Info("Client %s disconnected (EOF), releasing IP %s", client.addr, client.localIP.String())
 					s.ipPool.ReleaseIP(*client.localIP)
+					client.Close()
 					delete(s.clients, client.localIP.String())
 					return
 				}
@@ -353,6 +356,13 @@ func (s *Server) handleClient(client *Client) {
 				continue
 			}
 			s.logger.Trace("Packet decrypted successfully for client %s", client.addr)
+			if packet.GetDisconnectFlag() {
+				s.logger.Info("Client %s disconnected, releasing IP %s", client.addr, client.localIP.String())
+				s.ipPool.ReleaseIP(*client.localIP)
+				client.Close()
+				delete(s.clients, client.localIP.String())
+				return
+			}
 
 			client.countRecv++
 			salt := packet.GetSalt()
@@ -449,6 +459,7 @@ func (s *Server) cleanupIdleClients() {
 					s.logger.Info("Client %s (IP: %s) idle for %v, disconnecting", client.addr, addr, idleTime)
 					client.conn.Close()
 					s.ipPool.ReleaseIP(*client.localIP)
+					client.Close()
 					delete(s.clients, addr)
 					idleCount++
 				}

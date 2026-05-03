@@ -15,14 +15,15 @@ const (
 )
 
 type StreamingPacket struct {
-	salt       []byte
-	rawData    []byte
-	plainData  []byte
-	cipherData []byte
-	publicKey  []byte
-	fakeFlag   bool
-	ecdhFlag   bool
-	typePacket TypePacket
+	salt           []byte
+	rawData        []byte
+	plainData      []byte
+	cipherData     []byte
+	publicKey      []byte
+	fakeFlag       bool
+	ecdhFlag       bool
+	disconnectFlag bool
+	typePacket     TypePacket
 }
 
 func NewPlainPacket() (packet *StreamingPacket) {
@@ -53,7 +54,7 @@ func (s *StreamingPacket) AddData(data []byte) {
 	}
 }
 
-func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecdh bool) (err error) {
+func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecdh, disconnect bool) (err error) {
 	if s.typePacket != PlainPacket {
 		return errors.New("this operation is available only for the PlainPacket package type")
 	}
@@ -61,6 +62,7 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 	s.fakeFlag = fake
 	s.ecdhFlag = ecdh
 	s.publicKey = publicKey
+	s.disconnectFlag = disconnect
 	s.salt = salt
 	var nonce []byte
 	plainData := make([]byte, len(s.plainData)+len(salt)+len(s.publicKey))
@@ -100,7 +102,7 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 		return fmt.Errorf("error generating random bytes: %v", err)
 	}
 
-	flags := flagsBytes[0] & 0b11111000
+	flags := flagsBytes[0] & 0b11110000
 	if s.fakeFlag {
 		flags = flags | 0b00000001
 	}
@@ -109,6 +111,9 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 	}
 	if len(salt) != 0 {
 		flags = flags | 0b00000100
+	}
+	if s.disconnectFlag {
+		flags = flags | 0b00001000
 	}
 
 	s.rawData[0] = s.rawData[0] ^ key[0]
@@ -132,7 +137,8 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 
 	s.ecdhFlag = (flags>>1)&1 == 1
 	s.fakeFlag = flags&1 == 1
-	if s.fakeFlag {
+	s.disconnectFlag = (flags>>3)&1 == 1
+	if s.fakeFlag || s.disconnectFlag {
 		return nil
 	}
 
@@ -181,6 +187,10 @@ func (s *StreamingPacket) GetPublicKey() (publicLey []byte) {
 
 func (s *StreamingPacket) GetEcdhFlag() (ecdhFlag bool) {
 	return s.ecdhFlag
+}
+
+func (s *StreamingPacket) GetDisconnectFlag() (disconnectFlag bool) {
+	return s.disconnectFlag
 }
 
 func (s *StreamingPacket) GetSlicePlainData(start, end int) (slicePlainData []byte, err error) {

@@ -97,3 +97,7 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 
 	return data, nil
 }
+
+func (c *Client) Close() {
+	c.conn.Close()
+}
