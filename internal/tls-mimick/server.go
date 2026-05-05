@@ -7,10 +7,11 @@ import (
 
 func GetServerHelloPattern1() *Packet {
 	handshakeRecord := &HandshakeRecord{
-		Type:            0x02,
-		Length:          0,
-		VersionTLS:      tls.VersionTLS12,
-		SessionIDLength: 32,
+		RecordVersionTLS: tls.VersionTLS12,
+		Type:             0x02,
+		Length:           0,
+		VersionTLS:       tls.VersionTLS12,
+		SessionIDLength:  32,
 		CipherSuites: []uint16{
 			tls.TLS_AES_128_GCM_SHA256, // 0x1301
 		},
