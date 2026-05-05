@@ -3,7 +3,6 @@ package tlsmimick
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 )
 
 type SNIExtension struct {
@@ -17,16 +16,15 @@ func CreateSNIExtension(host string) Extension {
 }
 
 func (s SNIExtension) GetExtensionBytes() []byte {
-	result := make([]byte, 9+len(s.host))
-	result[0] = 0x00
-	result[1] = 0x00
-	binary.BigEndian.PutUint16(result[2:4], uint16(len(s.host)+3+2))
-	binary.BigEndian.PutUint16(result[4:6], uint16(len(s.host)+3))
-	result[6] = 0x00
-	binary.BigEndian.PutUint16(result[7:9], uint16(len(s.host)))
-	copy(result[9:], []byte(s.host))
+	var result bytes.Buffer
+	result.Write([]byte{0x00, 0x00})
+	result.Write(uint16ToBytes(uint16(len(s.host) + 3 + 2)))
+	result.Write(uint16ToBytes(uint16(len(s.host) + 3)))
+	result.Write([]byte{0x00})
+	result.Write(uint16ToBytes(uint16(len(s.host))))
+	result.Write([]byte(s.host))
 
-	return result
+	return result.Bytes()
 }
 
 type ExtendedMasterSecret struct{}
@@ -60,19 +58,16 @@ func CreateSupportedGroups(groups []uint16) Extension {
 }
 
 func (s SupportedGroups) GetExtensionBytes() []byte {
-	result := make([]byte, 6+(len(s.groups)*2))
-	result[0] = 0x00
-	result[1] = 0x0a
-	binary.BigEndian.PutUint16(result[2:4], uint16(2+(len(s.groups)*2)))
-	binary.BigEndian.PutUint16(result[4:6], uint16(len(s.groups)*2))
+	var result bytes.Buffer
+	result.Write([]byte{0x00, 0x0a})
+	result.Write(uint16ToBytes(uint16(2 + (len(s.groups) * 2))))
+	result.Write(uint16ToBytes(uint16(len(s.groups) * 2)))
 
-	offset := 6
 	for _, group := range s.groups {
-		binary.BigEndian.PutUint16(result[offset:offset+2], group)
-		offset += 2
+		result.Write(uint16ToBytes(uint16(group)))
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type ECPointFormats struct {
@@ -86,19 +81,16 @@ func CreateECPointFormats(formats []uint8) Extension {
 }
 
 func (e ECPointFormats) GetExtensionBytes() []byte {
-	result := make([]byte, 5+len(e.formats))
-	result[0] = 0x00
-	result[1] = 0x0b
-	binary.BigEndian.PutUint16(result[2:4], uint16(1+len(e.formats)))
-	result[4] = uint8(len(e.formats))
+	var result bytes.Buffer
+	result.Write([]byte{0x00, 0x0b})
+	result.Write(uint16ToBytes(uint16(1 + len(e.formats))))
+	result.Write([]byte{uint8(len(e.formats))})
 
-	offset := 5
 	for _, format := range e.formats {
-		result[offset] = format
-		offset += 1
+		result.Write([]byte{format})
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type SessionTicket struct{}
@@ -126,21 +118,18 @@ func (a ALPN) GetExtensionBytes() []byte {
 	for _, protocol := range a.protocols {
 		lenProtocolsString += len(protocol)
 	}
+	var result bytes.Buffer
 
-	result := make([]byte, 6+len(a.protocols)+lenProtocolsString)
-	result[0] = 0x00
-	result[1] = 0x10
-	binary.BigEndian.PutUint16(result[2:4], uint16(2+len(a.protocols)+lenProtocolsString))
-	binary.BigEndian.PutUint16(result[4:6], uint16(len(a.protocols)+lenProtocolsString))
+	result.Write([]byte{0x00, 0x10})
+	result.Write(uint16ToBytes(uint16(2 + len(a.protocols) + lenProtocolsString)))
+	result.Write(uint16ToBytes(uint16(len(a.protocols) + lenProtocolsString)))
 
-	offset := 6
 	for _, protocol := range a.protocols {
-		result[offset] = uint8(len(protocol))
-		copy(result[offset+1:offset+1+len(protocol)], []byte(protocol))
-		offset += 1 + len(protocol)
+		result.Write([]byte{uint8(len(protocol))})
+		result.Write([]byte(protocol))
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type StatusRequest struct{}
@@ -164,19 +153,17 @@ func CreateDelegetedCredentials(signatureHashAlgorithms []uint16) Extension {
 }
 
 func (d DelegetedCredentials) GetExtensionBytes() []byte {
-	result := make([]byte, 6+(len(d.signatureHashAlgorithms)*2))
-	result[0] = 0x00
-	result[1] = 0x22
-	binary.BigEndian.PutUint16(result[2:4], uint16(2+(len(d.signatureHashAlgorithms)*2)))
-	binary.BigEndian.PutUint16(result[4:6], uint16(len(d.signatureHashAlgorithms)*2))
+	var result bytes.Buffer
 
-	offset := 6
+	result.Write([]byte{0x00, 0x22})
+	result.Write(uint16ToBytes(uint16(2 + (len(d.signatureHashAlgorithms) * 2))))
+	result.Write(uint16ToBytes(uint16(len(d.signatureHashAlgorithms) * 2)))
+
 	for _, algorithm := range d.signatureHashAlgorithms {
-		binary.BigEndian.PutUint16(result[offset:offset+2], algorithm)
-		offset += 2
+		result.Write(uint16ToBytes(algorithm))
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type SignedCertificateTimestamp struct{}
@@ -209,31 +196,23 @@ func (k KeyShare) GetExtensionBytes() []byte {
 	for _, entry := range k.entrys {
 		lengthKeys += len(entry.KeyExchange)
 	}
-	var result []byte
-	var offset int
+	var result bytes.Buffer
+
+	result.Write([]byte{0x00, 0x33})
 	if len(k.entrys) > 1 {
-		result = make([]byte, 6+(4*len(k.entrys))+lengthKeys)
-		binary.BigEndian.PutUint16(result[2:4], uint16(2+(4*len(k.entrys))+lengthKeys))
-		binary.BigEndian.PutUint16(result[4:6], uint16((4*len(k.entrys))+lengthKeys))
-		offset = 6
+		result.Write(uint16ToBytes(uint16(2 + (4 * len(k.entrys)) + lengthKeys)))
+		result.Write(uint16ToBytes(uint16((4 * len(k.entrys)) + lengthKeys)))
 	} else {
-		result = make([]byte, 4+(4*len(k.entrys))+lengthKeys)
-		binary.BigEndian.PutUint16(result[2:4], uint16(4*len(k.entrys)+lengthKeys))
-		offset = 4
+		result.Write(uint16ToBytes(uint16(4*len(k.entrys) + lengthKeys)))
 	}
-	result[0] = 0x00
-	result[1] = 0x33
 
 	for _, key := range k.entrys {
-		binary.BigEndian.PutUint16(result[offset:offset+2], key.Group)
-		fmt.Printf("% x\n", key.Group)
-		offset += 2
-		binary.BigEndian.PutUint16(result[offset:offset+2], uint16(len(key.KeyExchange)))
-		offset += 2
-		copy(result[offset:offset+len(key.KeyExchange)], key.KeyExchange)
-		offset += len(key.KeyExchange)
+		result.Write(uint16ToBytes(key.Group))
+		result.Write(uint16ToBytes(uint16(len(key.KeyExchange))))
+		result.Write(key.KeyExchange)
 	}
-	return result
+
+	return result.Bytes()
 }
 
 type SupportedVersions struct {
@@ -247,26 +226,21 @@ func CreateSupportedVersions(versions []uint16) Extension {
 }
 
 func (s SupportedVersions) GetExtensionBytes() []byte {
-	var offset int
-	var result []byte
+	var result bytes.Buffer
+
+	result.Write([]byte{0x00, 0x2b})
 	if len(s.versions) > 1 {
-		result = make([]byte, 5+(len(s.versions)*2))
-		binary.BigEndian.PutUint16(result[2:4], uint16(1+(len(s.versions)*2)))
-		result[4] = uint8(len(s.versions) * 2)
-		offset = 5
+		result.Write(uint16ToBytes(uint16(1 + (len(s.versions) * 2))))
+		result.Write([]byte{uint8(len(s.versions) * 2)})
 	} else {
-		result = make([]byte, 4+(len(s.versions)*2))
-		binary.BigEndian.PutUint16(result[2:4], uint16(len(s.versions)*2))
-		offset = 4
+		result.Write(uint16ToBytes(uint16(len(s.versions) * 2)))
 	}
-	result[0] = 0x00
-	result[1] = 0x2b
 
 	for _, version := range s.versions {
-		binary.BigEndian.PutUint16(result[offset:offset+2], version)
-		offset += 2
+		result.Write(uint16ToBytes(version))
 	}
-	return result
+
+	return result.Bytes()
 }
 
 type SignatureAlgorithms struct {
@@ -280,19 +254,17 @@ func CreateSignatureAlgorithms(signatureHashAlgorithms []uint16) Extension {
 }
 
 func (s SignatureAlgorithms) GetExtensionBytes() []byte {
-	result := make([]byte, 6+(len(s.signatureHashAlgorithms)*2))
-	result[0] = 0x00
-	result[1] = 0x0d
-	binary.BigEndian.PutUint16(result[2:4], uint16(2+(len(s.signatureHashAlgorithms)*2)))
-	binary.BigEndian.PutUint16(result[4:6], uint16(len(s.signatureHashAlgorithms)*2))
+	var result bytes.Buffer
 
-	offset := 6
+	result.Write([]byte{0x00, 0x0d})
+	result.Write(uint16ToBytes(uint16(2 + (len(s.signatureHashAlgorithms) * 2))))
+	result.Write(uint16ToBytes(uint16(len(s.signatureHashAlgorithms) * 2)))
+
 	for _, algorithm := range s.signatureHashAlgorithms {
-		binary.BigEndian.PutUint16(result[offset:offset+2], algorithm)
-		offset += 2
+		result.Write(uint16ToBytes(algorithm))
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type PSKKeyExchangeModes struct {
@@ -306,18 +278,16 @@ func CreatePSKKeyExchangeModes(modes []uint8) Extension {
 }
 
 func (p PSKKeyExchangeModes) GetExtensionBytes() []byte {
-	result := make([]byte, 5+len(p.modes))
-	result[0] = 0x00
-	result[1] = 0x2d
-	binary.BigEndian.PutUint16(result[2:4], uint16(1+len(p.modes)))
-	result[4] = uint8(len(p.modes))
+	var result bytes.Buffer
 
-	offset := 5
+	result.Write([]byte{0x00, 0x2d})
+	result.Write(uint16ToBytes(uint16(1 + len(p.modes))))
+	result.Write([]byte{uint8(len(p.modes))})
+
 	for _, mode := range p.modes {
-		result[offset] = mode
-		offset += 1
+		result.Write([]byte{mode})
 	}
-	return result
+	return result.Bytes()
 }
 
 type RecordSizeLimit struct {
@@ -331,13 +301,12 @@ func CreateRecordSizeLimit(limit uint16) Extension {
 }
 
 func (r RecordSizeLimit) GetExtensionBytes() []byte {
-	result := make([]byte, 6)
-	result[0] = 0x00
-	result[1] = 0x1c
-	binary.BigEndian.PutUint16(result[2:4], uint16(2))
-	binary.BigEndian.PutUint16(result[4:6], r.limit)
+	var result bytes.Buffer
 
-	return result
+	result.Write([]byte{0x00, 0x1c, 0x00, 0x02})
+	result.Write(uint16ToBytes(r.limit))
+
+	return result.Bytes()
 }
 
 type CompressCertificate struct {
@@ -351,19 +320,17 @@ func CreateCompressCertificate(algorithms []uint16) Extension {
 }
 
 func (c CompressCertificate) GetExtensionBytes() []byte {
-	result := make([]byte, 5+(len(c.algorithms)*2))
-	result[0] = 0x00
-	result[1] = 0x1b
-	binary.BigEndian.PutUint16(result[2:4], uint16(1+(len(c.algorithms)*2)))
-	result[4] = uint8(len(c.algorithms) * 2)
+	var result bytes.Buffer
 
-	offset := 5
+	result.Write([]byte{0x00, 0x1b})
+	result.Write(uint16ToBytes(uint16(1 + (len(c.algorithms) * 2))))
+	result.Write([]byte{uint8(len(c.algorithms) * 2)})
+
 	for _, algorithm := range c.algorithms {
-		binary.BigEndian.PutUint16(result[offset:offset+2], algorithm)
-		offset += 2
+		result.Write(uint16ToBytes(uint16(algorithm)))
 	}
 
-	return result
+	return result.Bytes()
 }
 
 type EncryptedClientHello struct {
@@ -414,4 +381,10 @@ func (e EncryptedClientHello) GetExtensionBytes() []byte {
 	fin[3] = byte((len(fin) - 4))
 
 	return fin
+}
+
+func uint16ToBytes(source uint16) []byte {
+	result := make([]byte, 2)
+	binary.BigEndian.PutUint16(result[0:2], source)
+	return result
 }
