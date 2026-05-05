@@ -1,7 +1,9 @@
 package tlsmimick
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 )
 
 type SNIExtension struct {
@@ -207,16 +209,24 @@ func (k KeyShare) GetExtensionBytes() []byte {
 	for _, entry := range k.entrys {
 		lengthKeys += len(entry.KeyExchange)
 	}
-
-	result := make([]byte, 6+(4*len(k.entrys))+lengthKeys)
+	var result []byte
+	var offset int
+	if len(k.entrys) > 1 {
+		result = make([]byte, 6+(4*len(k.entrys))+lengthKeys)
+		binary.BigEndian.PutUint16(result[2:4], uint16(2+(4*len(k.entrys))+lengthKeys))
+		binary.BigEndian.PutUint16(result[4:6], uint16((4*len(k.entrys))+lengthKeys))
+		offset = 6
+	} else {
+		result = make([]byte, 4+(4*len(k.entrys))+lengthKeys)
+		binary.BigEndian.PutUint16(result[2:4], uint16(4*len(k.entrys)+lengthKeys))
+		offset = 4
+	}
 	result[0] = 0x00
 	result[1] = 0x33
-	binary.BigEndian.PutUint16(result[2:4], uint16(2+(4*len(k.entrys))+lengthKeys))
-	binary.BigEndian.PutUint16(result[4:6], uint16((4*len(k.entrys))+lengthKeys))
 
-	offset := 6
 	for _, key := range k.entrys {
 		binary.BigEndian.PutUint16(result[offset:offset+2], key.Group)
+		fmt.Printf("% x\n", key.Group)
 		offset += 2
 		binary.BigEndian.PutUint16(result[offset:offset+2], uint16(len(key.KeyExchange)))
 		offset += 2
@@ -237,13 +247,21 @@ func CreateSupportedVersions(versions []uint16) Extension {
 }
 
 func (s SupportedVersions) GetExtensionBytes() []byte {
-	result := make([]byte, 5+(len(s.versions)*2))
+	var offset int
+	var result []byte
+	if len(s.versions) > 1 {
+		result = make([]byte, 5+(len(s.versions)*2))
+		binary.BigEndian.PutUint16(result[2:4], uint16(1+(len(s.versions)*2)))
+		result[4] = uint8(len(s.versions) * 2)
+		offset = 5
+	} else {
+		result = make([]byte, 4+(len(s.versions)*2))
+		binary.BigEndian.PutUint16(result[2:4], uint16(len(s.versions)*2))
+		offset = 4
+	}
 	result[0] = 0x00
 	result[1] = 0x2b
-	binary.BigEndian.PutUint16(result[2:4], uint16(1+(len(s.versions)*2)))
-	result[4] = uint8(len(s.versions) * 2)
 
-	offset := 5
 	for _, version := range s.versions {
 		binary.BigEndian.PutUint16(result[offset:offset+2], version)
 		offset += 2
@@ -346,4 +364,54 @@ func (c CompressCertificate) GetExtensionBytes() []byte {
 	}
 
 	return result
+}
+
+type EncryptedClientHello struct {
+	KDFId    uint16
+	AEADId   uint16
+	ConfigId uint8
+	Enc      []byte
+	Payload  []byte
+}
+
+func CreateEncryptedClientHello(KDFId, AEADId uint16, configId uint8, enc, payload []byte) Extension {
+	return EncryptedClientHello{
+		KDFId:    KDFId,
+		AEADId:   AEADId,
+		ConfigId: configId,
+		Enc:      enc,
+		Payload:  payload,
+	}
+}
+
+func (e EncryptedClientHello) GetExtensionBytes() []byte {
+	var result bytes.Buffer
+	lengthEnc := len(e.Enc)
+	lengthPayload := len(e.Payload)
+	result.Write(
+		[]byte{
+			0xfe,
+			0x0d,
+			0x00,
+			0x00,
+			0x00,
+			byte(e.KDFId >> 8),
+			byte(e.KDFId),
+			byte(e.AEADId >> 8),
+			byte(e.AEADId),
+			byte(e.ConfigId),
+			byte(lengthEnc >> 8),
+			byte(lengthEnc),
+		},
+	)
+
+	result.Write(e.Enc)
+	result.Write([]byte{byte(lengthPayload >> 8), byte(lengthPayload)})
+	result.Write(e.Payload)
+
+	fin := result.Bytes()
+	fin[2] = byte((len(fin) - 4) >> 8)
+	fin[3] = byte((len(fin) - 4))
+
+	return fin
 }

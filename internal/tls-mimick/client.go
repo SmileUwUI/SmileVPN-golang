@@ -1,25 +1,16 @@
 package tlsmimick
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 )
 
-type ClientHello struct {
-	Type             uint8
-	Version          uint16
-	Length           uint16
-	HandshakeSegment *HandshakeSegment
-}
-
-var firefox150 = &ClientHello{
-	Type:    0x16,
-	Version: tls.VersionTLS10,
-	Length:  0,
-	HandshakeSegment: &HandshakeSegment{
+func GetHelloRecordFirefox150(host string) *Packet {
+	handshakeRecordFirefox150 := &HandshakeRecord{
+		RecordVersionTLS:   tls.VersionTLS10,
+		RecordLength:       0,
 		Type:               0x01,
 		Length:             0,
 		VersionTLS:         tls.VersionTLS12,
@@ -51,16 +42,12 @@ var firefox150 = &ClientHello{
 		},
 		ExtensionsLength: 0,
 		Extensions:       []Extension{},
-	},
-}
+	}
 
-func GetFirefox150(host string) *ClientHello {
-	packet := firefox150
-
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSNIExtension(host))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateExtendedMasterSecret())
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateRenegotiationInfo())
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSupportedGroups(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSNIExtension(host))
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateExtendedMasterSecret())
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateRenegotiationInfo())
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSupportedGroups(
 		[]uint16{
 			uint16(tls.X25519MLKEM768), // 0x11ec
 			uint16(tls.X25519),         // 0x001d
@@ -71,16 +58,16 @@ func GetFirefox150(host string) *ClientHello {
 			0x0101,                     // ffdhe3072 0x0101
 		}),
 	)
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateECPointFormats([]uint8{0x00}))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSessionTicket())
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateALPN(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateECPointFormats([]uint8{0x00}))
+	// handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSessionTicket())
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateALPN(
 		[]string{
 			"h2",
 			"http/1.1",
 		}),
 	)
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateStatusRequest())
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateDelegetedCredentials(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateStatusRequest())
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateDelegetedCredentials(
 		[]uint16{
 			uint16(tls.ECDSAWithP256AndSHA256), // 0x0403
 			uint16(tls.ECDSAWithP384AndSHA384), // 0x0503
@@ -88,7 +75,7 @@ func GetFirefox150(host string) *ClientHello {
 			uint16(tls.ECDSAWithSHA1),          // 0x0203
 		}),
 	)
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSignedCertificateTimestamp())
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSignedCertificateTimestamp())
 
 	x25519 := make([]byte, 32)
 	if _, err := rand.Read(x25519); err != nil {
@@ -111,7 +98,7 @@ func GetFirefox150(host string) *ClientHello {
 		panic(err)
 	}
 
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateKeyShare(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateKeyShare(
 		[]*KeyShareEntry{
 			{
 				Group:       0x11ec, // X25519MLKEM768
@@ -127,13 +114,13 @@ func GetFirefox150(host string) *ClientHello {
 			},
 		},
 	))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSupportedVersions(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSupportedVersions(
 		[]uint16{
 			tls.VersionTLS13,
 			tls.VersionTLS12,
 		},
 	))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateSignatureAlgorithms(
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateSignatureAlgorithms(
 		[]uint16{
 			uint16(tls.ECDSAWithP256AndSHA256), // 0x0403
 			uint16(tls.ECDSAWithP384AndSHA384), // 0x0503
@@ -148,89 +135,46 @@ func GetFirefox150(host string) *ClientHello {
 			0x0201,                             // rsa_pkcs1_sha1
 		},
 	))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreatePSKKeyExchangeModes(
-		[]uint8{
-			0x01, // PSK with (EC)DHE key
-		},
-	))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateRecordSizeLimit(16385))
-	packet.HandshakeSegment.Extensions = append(packet.HandshakeSegment.Extensions, CreateCompressCertificate(
+	// handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreatePSKKeyExchangeModes(
+	// 	[]uint8{
+	// 		0x01, // PSK with (EC)DHE key
+	// 	},
+	// ))
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateRecordSizeLimit(16385))
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateCompressCertificate(
 		[]uint16{
 			0x0001, // zlib
 			0x0002, // brotli
 			0x0003, // zstd
 		},
 	))
+	configId := make([]byte, 1)
+	if _, err := rand.Read(configId); err != nil {
+		panic(err)
+	}
+
+	enc := make([]byte, 32)
+	if _, err := rand.Read(enc); err != nil {
+		panic(err)
+	}
+
+	payload := make([]byte, 239)
+	if _, err := rand.Read(payload); err != nil {
+		panic(err)
+	}
+	handshakeRecordFirefox150.Extensions = append(handshakeRecordFirefox150.Extensions, CreateEncryptedClientHello(
+		0x0001,
+		0x0001,
+		configId[0],
+		enc,
+		payload,
+	))
+
+	packet := &Packet{
+		Records: []Record{
+			handshakeRecordFirefox150,
+		},
+	}
 
 	return packet
-}
-
-func (c *ClientHello) AssemblyClientHello() []byte {
-	var (
-		buf           bytes.Buffer
-		extensionsBuf bytes.Buffer
-	)
-	buf.Write(
-		[]byte{
-			c.Type,
-			byte(c.Version >> 8),
-			byte(c.Version),
-			byte(c.Length >> 8),
-			byte(c.Length),
-		},
-	)
-	buf.Write(
-		[]byte{
-			c.HandshakeSegment.Type,
-			byte(c.HandshakeSegment.Length >> 16),
-			byte(c.HandshakeSegment.Length >> 8),
-			byte(c.HandshakeSegment.Length),
-			byte(c.HandshakeSegment.VersionTLS >> 8),
-			byte(c.HandshakeSegment.VersionTLS),
-		},
-	)
-
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		panic(err)
-	}
-	buf.Write(random)
-	buf.Write([]byte{c.HandshakeSegment.SessionIDLength})
-
-	sessionID := make([]byte, c.HandshakeSegment.SessionIDLength)
-	if _, err := rand.Read(sessionID); err != nil {
-		panic(err)
-	}
-	buf.Write(sessionID)
-
-	buf.Write([]byte{byte(c.HandshakeSegment.CipherSuitesLength >> 8), byte(c.HandshakeSegment.CipherSuitesLength)})
-	for _, suite := range c.HandshakeSegment.CipherSuites {
-		buf.Write([]byte{byte(suite >> 8), byte(suite)})
-	}
-
-	buf.Write([]byte{c.HandshakeSegment.CompressionMethodsLength})
-	for _, method := range c.HandshakeSegment.CompressionMethods {
-		buf.Write([]byte{method})
-	}
-
-	for _, extension := range c.HandshakeSegment.Extensions {
-		extensionsBuf.Write(extension.GetExtensionBytes())
-	}
-	extensionsBytes := extensionsBuf.Bytes()
-	lenExtension := len(extensionsBytes)
-	buf.Write([]byte{byte(lenExtension >> 8), byte(lenExtension)})
-	buf.Write(extensionsBytes)
-
-	fin := buf.Bytes()
-
-	lengthFin := uint16(len(fin) - 5)
-	fin[3] = byte(lengthFin >> 8)
-	fin[4] = byte(lengthFin)
-
-	lengthHandshake := uint32(len(fin) - 9)
-	fin[6] = byte(lengthHandshake >> 16)
-	fin[7] = byte(lengthHandshake >> 8)
-	fin[8] = byte(lengthHandshake)
-
-	return fin
 }
