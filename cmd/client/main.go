@@ -17,6 +17,7 @@ func main() {
 		passwordString     string
 		initPasswordString string
 		host               string
+		hostName           string
 		port               int
 		loggerLevel        int
 		updateThroughSalt  bool
@@ -36,6 +37,9 @@ func main() {
 
 	flag.StringVar(&host, "h", "", "Host (short)")
 	flag.StringVar(&host, "host", "", "Host")
+
+	flag.StringVar(&hostName, "H", "", "Host name (short)")
+	flag.StringVar(&hostName, "host-name", "", "Host name")
 
 	flag.IntVar(&port, "P", 16020, "Port (short)")
 	flag.IntVar(&port, "port", 16020, "Port")
@@ -143,7 +147,7 @@ func main() {
 
 	log := logger.NewLogger(loggerLevel)
 
-	clientInstance, err := client.NewClient(host, "example.com", port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, log)
+	clientInstance, err := client.NewClient(host, hostName, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to create client: %v\n", err)
 		os.Exit(1)
