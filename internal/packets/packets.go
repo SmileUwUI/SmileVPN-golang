@@ -2,6 +2,7 @@ package packets
 
 import (
 	"SmileVPN/internal/crypto"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -77,25 +78,18 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 		return fmt.Errorf("packet decryption error: %v", err)
 	}
 
-	s.rawData = make([]byte, len(s.cipherData)+len(nonce)+2+2+1) // size CipherData + size Nonce + size length RawData + size length CipherData + size flags byte
+	s.rawData = make([]byte, len(s.cipherData)+len(nonce)+2+1) // size CipherData + size Nonce + size length RawData + size length CipherData + size flags byte
 
 	lenCipherData := len(s.cipherData) + len(nonce) + 2
 	if lenCipherData < 0 {
 		lenCipherData = 0
 	}
 
-	binary.BigEndian.PutUint16(s.rawData[3:5], uint16(lenCipherData))
-	copy(s.rawData[5:17], nonce)
-	copy(s.rawData[17:], s.cipherData)
+	binary.BigEndian.PutUint16(s.rawData[1:3], uint16(lenCipherData))
+	copy(s.rawData[3:15], nonce)
+	copy(s.rawData[15:], s.cipherData)
 
 	s.rawData = crypto.Trashfication(s.rawData, 300, 800)
-
-	lenRawData := len(s.rawData)
-	if lenRawData < 0 {
-		lenRawData = 0
-	}
-
-	binary.BigEndian.PutUint16(s.rawData[:2], uint16(lenRawData))
 
 	flagsBytes, err := crypto.RandomBytes(1)
 	if err != nil {
@@ -116,11 +110,15 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 		flags = flags | 0b00001000
 	}
 
-	s.rawData[0] = s.rawData[0] ^ key[0]
-	s.rawData[1] = s.rawData[1] ^ key[1]
-	s.rawData[2] = flags ^ key[2]
-	s.rawData[3] = s.rawData[3] ^ key[3]
-	s.rawData[4] = s.rawData[4] ^ key[4]
+	s.rawData[0] = flags ^ key[2]
+	s.rawData[1] = s.rawData[1] ^ key[3]
+	s.rawData[2] = s.rawData[2] ^ key[4]
+
+	var rawDataWithtHeader bytes.Buffer
+	rawDataWithtHeader.Write([]byte{0x17, 0x03, 0x03, uint8(len(s.rawData) >> 8), uint8(len(s.rawData))})
+	rawDataWithtHeader.Write(s.rawData)
+
+	s.rawData = rawDataWithtHeader.Bytes()
 
 	return nil
 }
@@ -130,8 +128,8 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 		return errors.New("this operation is available only for the RawPacket package type")
 	}
 
-	lengthCipherDataBytes := s.rawData[3:5]
-	flags := s.rawData[2] ^ key[2]
+	lengthCipherDataBytes := s.rawData[6:8]
+	flags := s.rawData[5] ^ key[2]
 	lengthCipherDataBytes[0] = lengthCipherDataBytes[0] ^ key[3]
 	lengthCipherDataBytes[1] = lengthCipherDataBytes[1] ^ key[4]
 
@@ -143,12 +141,7 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	}
 
 	lengthCipherData := binary.BigEndian.Uint16(lengthCipherDataBytes)
-	lenRawData := len(s.rawData)
-
-	if lengthCipherData+3 > uint16(lenRawData) {
-		return errors.New("invalid length")
-	}
-	s.cipherData = s.rawData[5 : lengthCipherData+3]
+	s.cipherData = s.rawData[8 : lengthCipherData+6]
 
 	s.plainData, err = crypto.DecryptChaCha20Poly1305(s.cipherData[12:], s.cipherData[:12], key)
 	if err != nil {

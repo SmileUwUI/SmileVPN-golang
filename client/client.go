@@ -4,6 +4,7 @@ import (
 	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
+	tlsmimick "SmileVPN/internal/tls-mimick"
 	"SmileVPN/internal/tunnel"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -19,6 +20,7 @@ import (
 
 type Client struct {
 	host                     string
+	hostName                 string
 	port                     int
 	initPassword             [32]byte
 	username                 [16]byte
@@ -43,10 +45,11 @@ type Client struct {
 	stopCh chan struct{}
 }
 
-func NewClient(host string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt bool, logger *logger.Logger) (client *Client, err error) {
+func NewClient(host, hostName string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt bool, logger *logger.Logger) (client *Client, err error) {
 	logger.Trace("Creating new client instance for %s:%d", host, port)
 	return &Client{
 		host:              host,
+		hostName:          hostName,
 		port:              port,
 		initPassword:      initPassword,
 		username:          username,
@@ -73,6 +76,18 @@ func (c *Client) Run() (err error) {
 	c.conn = conn.(*net.TCPConn)
 	c.logger.Info("Connection established")
 	c.logger.Debug("Local address: %s, Remote address: %s", c.conn.LocalAddr(), c.conn.RemoteAddr())
+
+	_, err = conn.Write(tlsmimick.GetHelloRecordFirefox150(c.hostName).Assembly())
+	if err != nil {
+		return err
+	}
+
+	// TODO: Add ServerHello validation
+	serverHello := make([]byte, 65535)
+	_, err = conn.Read(serverHello)
+	if err != nil {
+		return
+	}
 
 	c.logger.Info("A handshake with the server has begun")
 	c.sessionRecvKey = c.initPassword[:]
@@ -495,39 +510,30 @@ func (c *Client) computeNextSessionRecvKey(salt []byte) {
 }
 
 func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {
-	c.logger.Trace("Reading packet length (2 bytes)")
-	lenPacketBytes, err := c.read(2)
+	lenPacketBytes, err := c.read(5)
 	if err != nil {
-		c.logger.Error("Failed to read packet length: %v", err)
 		return nil, err
 	}
 
 	packet = packets.NewRawPacket()
 	packet.AddData(lenPacketBytes)
 
-	lenPacketBytes[0] = lenPacketBytes[0] ^ c.sessionRecvKey[0]
-	lenPacketBytes[1] = lenPacketBytes[1] ^ c.sessionRecvKey[1]
-	lenPacket := binary.BigEndian.Uint16(lenPacketBytes)
-	c.logger.Trace("Packet length: %d bytes (decrypted)", lenPacket)
+	lenPacket := binary.BigEndian.Uint16(lenPacketBytes[3:5])
 
-	rawPacket, err := c.read(lenPacket - 2)
+	rawPacket, err := c.read(lenPacket)
 	if err != nil {
-		c.logger.Error("Failed to read packet data: %v", err)
 		return nil, err
 	}
 	packet.AddData(rawPacket)
-	c.logger.Trace("Packet read successfully, total size: %d bytes", len(packet.GetRawData()))
 
 	return packet, nil
 }
 
 func (c *Client) read(length uint16) (data []byte, err error) {
 	if length == 0 {
-		c.logger.Trace("Read called with length 0, returning empty slice")
 		return []byte{}, nil
 	}
 
-	c.logger.Trace("Reading %d bytes from connection", length)
 	data = make([]byte, length)
 	remaining := length
 	offset := 0
@@ -535,7 +541,6 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	for remaining > 0 {
 		n, err := c.conn.Read(data[offset:])
 		if err != nil {
-			c.logger.Error("Read error: %v (remaining=%d, offset=%d)", err, remaining, offset)
 			return nil, err
 		}
 		if n < 0 {
@@ -544,9 +549,7 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 
 		remaining -= uint16(n)
 		offset += n
-		c.logger.Trace("Read %d bytes, remaining: %d", n, remaining)
 	}
 
-	c.logger.Trace("Successfully read all %d bytes", length)
 	return data, nil
 }

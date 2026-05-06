@@ -4,6 +4,7 @@ import (
 	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
+	tlsmimick "SmileVPN/internal/tls-mimick"
 	"SmileVPN/internal/tunnel"
 	"SmileVPN/server/config"
 	"SmileVPN/server/users"
@@ -168,10 +169,22 @@ func (s *Server) handleConnection(conn net.Conn) {
 		maxPacketLength: 4096,
 	}
 
+	// TODO: Add ClientHello validation
+	clientHello := make([]byte, 65535)
+	_, err := conn.Read(clientHello)
+	if err != nil {
+		return
+	}
+
+	_, err = conn.Write(tlsmimick.GetServerHelloPattern1().Assembly())
+	if err != nil {
+		return
+	}
+
 	s.logger.Info("The handshake process with client %s has begun", clientAddr)
 	s.logger.Debug("Starting handshake stage 1 for client %s", clientAddr)
 
-	err := client.handshakeStage1(s.config.InitPassword, s.users)
+	err = client.handshakeStage1(s.config.InitPassword, s.users)
 	if err != nil {
 		s.logger.Error("Error during the first stage of the handshake with client %s: %v", clientAddr, err)
 		return

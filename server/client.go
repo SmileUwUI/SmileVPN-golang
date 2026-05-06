@@ -52,7 +52,7 @@ func (c *Client) computeNextSessionSentKey(salt []byte) {
 }
 
 func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {
-	lenPacketBytes, err := c.read(2)
+	lenPacketBytes, err := c.read(5)
 	if err != nil {
 		return nil, err
 	}
@@ -60,11 +60,9 @@ func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {
 	packet = packets.NewRawPacket()
 	packet.AddData(lenPacketBytes)
 
-	lenPacketBytes[0] = lenPacketBytes[0] ^ c.sessionRecvKey[0]
-	lenPacketBytes[1] = lenPacketBytes[1] ^ c.sessionRecvKey[1]
-	lenPacket := binary.BigEndian.Uint16(lenPacketBytes)
+	lenPacket := binary.BigEndian.Uint16(lenPacketBytes[3:5])
 
-	rawPacket, err := c.read(lenPacket - 2)
+	rawPacket, err := c.read(lenPacket)
 	if err != nil {
 		return nil, err
 	}
