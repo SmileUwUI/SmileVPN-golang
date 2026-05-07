@@ -65,31 +65,29 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 	s.publicKey = publicKey
 	s.disconnectFlag = disconnect
 	s.salt = salt
-	var nonce []byte
-	plainData := make([]byte, len(s.plainData)+len(salt)+len(s.publicKey))
-	copy(plainData[:len(salt)], salt)
-	if s.ecdhFlag {
-		copy(plainData[len(salt):len(salt)+len(s.publicKey)], s.publicKey)
-	}
-	copy(plainData[len(salt)+len(s.publicKey):], s.plainData)
 
-	s.cipherData, nonce, err = crypto.EncryptChaCha20Poly1305(plainData, key)
+	var nonce []byte
+	var plainData bytes.Buffer
+	plainData.Write(salt)
+	plainData.Write(s.publicKey)
+	plainData.Write(s.plainData)
+
+	s.cipherData, nonce, err = crypto.EncryptChaCha20Poly1305(plainData.Bytes(), key)
 	if err != nil {
 		return fmt.Errorf("packet decryption error: %v", err)
 	}
-
-	s.rawData = make([]byte, len(s.cipherData)+len(nonce)+2+1) // size CipherData + size Nonce + size length RawData + size length CipherData + size flags byte
 
 	lenCipherData := len(s.cipherData) + len(nonce) + 2
 	if lenCipherData < 0 {
 		lenCipherData = 0
 	}
 
-	binary.BigEndian.PutUint16(s.rawData[1:3], uint16(lenCipherData))
-	copy(s.rawData[3:15], nonce)
-	copy(s.rawData[15:], s.cipherData)
+	rawData := bytes.NewBuffer([]byte{0x00, uint8(lenCipherData >> 8), uint8(lenCipherData)})
 
-	s.rawData = crypto.Trashfication(s.rawData, 300, 800)
+	rawData.Write(nonce)
+	rawData.Write(s.cipherData)
+
+	s.rawData = crypto.Trashfication(rawData.Bytes(), 300, 800)
 
 	flagsBytes, err := crypto.RandomBytes(1)
 	if err != nil {
@@ -127,9 +125,14 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	if s.typePacket != RawPacket {
 		return errors.New("this operation is available only for the RawPacket package type")
 	}
+	rawData := bytes.NewBuffer(s.rawData)
 
-	lengthCipherDataBytes := s.rawData[6:8]
-	flags := s.rawData[5] ^ key[2]
+	rawData.Next(5)
+	flags, _ := rawData.ReadByte()
+	lengthCipherDataBytes := make([]byte, 2)
+	rawData.Read(lengthCipherDataBytes)
+
+	flags = flags ^ key[2]
 	lengthCipherDataBytes[0] = lengthCipherDataBytes[0] ^ key[3]
 	lengthCipherDataBytes[1] = lengthCipherDataBytes[1] ^ key[4]
 
@@ -141,7 +144,8 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	}
 
 	lengthCipherData := binary.BigEndian.Uint16(lengthCipherDataBytes)
-	s.cipherData = s.rawData[8 : lengthCipherData+6]
+	s.cipherData = make([]byte, lengthCipherData-2)
+	rawData.Read(s.cipherData)
 
 	s.plainData, err = crypto.DecryptChaCha20Poly1305(s.cipherData[12:], s.cipherData[:12], key)
 	if err != nil {
