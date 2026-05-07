@@ -4,6 +4,7 @@ import (
 	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
+	tlsmimick "SmileVPN/internal/tls-mimick"
 	"SmileVPN/internal/tunnel"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -94,6 +95,18 @@ func (c *Client) Run() (err error) {
 	time.Sleep(time.Millisecond * 100)
 
 	c.logger.Debug("Local address: %s, Remote address: %s", c.conn.LocalAddr(), c.conn.RemoteAddr())
+
+	_, err = conn.Write(tlsmimick.GetHelloRecordFirefox150(c.hostName).Assembly())
+	if err != nil {
+		return err
+	}
+
+	// TODO: Add ServerHello validation
+	serverHello := make([]byte, 65535)
+	_, err = conn.Read(serverHello)
+	if err != nil {
+		return
+	}
 
 	c.logger.Info("A handshake with the server has begun")
 	c.sessionRecvKey = c.initPassword[:]
