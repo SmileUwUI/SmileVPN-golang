@@ -4,7 +4,6 @@ import (
 	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
-	tlsmimick "SmileVPN/internal/tls-mimick"
 	"SmileVPN/internal/tunnel"
 	"SmileVPN/server/config"
 	"SmileVPN/server/users"
