@@ -14,8 +14,12 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"sync"
 	"time"
+	"unsafe"
+
+	tls "github.com/refraction-networking/utls"
 )
 
 type Server struct {
@@ -152,6 +156,26 @@ func (s *Server) handleConnection(conn net.Conn) {
 	s.logger.Trace("Handling new connection from %s", clientAddr)
 
 	now := time.Now()
+	cert, err := tls.LoadX509KeyPair(s.config.PathTLSCert, s.config.PathTLSKey)
+	if err != nil {
+		s.logger.Error("error load: %v", err)
+		return
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ServerName:   s.config.Host,
+	}
+
+	tlsConn := tls.Server(conn, tlsConfig)
+
+	err = tlsConn.Handshake()
+	if err != nil {
+		s.logger.Error("error handshake: %v", err)
+		return
+	}
+
+	connTCP = GetRawConn(tlsConn).(*net.TCPConn)
 
 	client := &Client{
 		addr:            clientAddr,
@@ -168,19 +192,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		logger:          s.logger,
 		maxPacketLength: 4096,
 	}
-
-	// TODO: Add ClientHello validation
-	clientHello := make([]byte, 65535)
-	_, err := conn.Read(clientHello)
-	if err != nil {
-		return
-	}
-
-	_, err = conn.Write(tlsmimick.GetServerHelloPattern1().Assembly())
-	if err != nil {
-		return
-	}
-
 	s.logger.Info("The handshake process with client %s has begun", clientAddr)
 	s.logger.Debug("Starting handshake stage 1 for client %s", clientAddr)
 
@@ -505,4 +516,19 @@ func (s *Server) GetClientCount() int32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clientCount
+}
+
+func GetRawConn(tlsConn net.Conn) net.Conn {
+	v := reflect.ValueOf(tlsConn).Elem()
+
+	connField := v.FieldByName("conn")
+	if !connField.IsValid() {
+		panic("поле conn не найдено")
+	}
+
+	fieldPtr := unsafe.Pointer(connField.UnsafeAddr())
+
+	connPtr := (*net.Conn)(fieldPtr)
+
+	return *connPtr
 }

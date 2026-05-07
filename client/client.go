@@ -14,8 +14,12 @@ import (
 	"hash"
 	"math/big"
 	"net"
+	"reflect"
 	"sync"
 	"time"
+	"unsafe"
+
+	tls "github.com/refraction-networking/utls"
 )
 
 type Client struct {
@@ -73,8 +77,23 @@ func (c *Client) Run() (err error) {
 		c.logger.Error("Server connection error: %v", err)
 		return fmt.Errorf("failed to connect to server: %w", err)
 	}
-	c.conn = conn.(*net.TCPConn)
 	c.logger.Info("Connection established")
+
+	tlsConfig := &tls.Config{
+		ServerName: c.hostName,
+	}
+
+	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloFirefox_120)
+
+	err = tlsConn.Handshake()
+	if err != nil {
+		c.logger.Error("error handshake: %v", err)
+		return err
+	}
+
+	c.conn = GetRawConn(tlsConn).(*net.TCPConn)
+	time.Sleep(time.Millisecond * 100)
+
 	c.logger.Debug("Local address: %s, Remote address: %s", c.conn.LocalAddr(), c.conn.RemoteAddr())
 
 	_, err = conn.Write(tlsmimick.GetHelloRecordFirefox150(c.hostName).Assembly())
@@ -552,4 +571,18 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	}
 
 	return data, nil
+}
+func GetRawConn(tlsConn net.Conn) net.Conn {
+	v := reflect.ValueOf(tlsConn).Elem()
+
+	connField := v.FieldByName("conn")
+	if !connField.IsValid() {
+		panic("поле conn не найдено")
+	}
+
+	fieldPtr := unsafe.Pointer(connField.UnsafeAddr())
+
+	connPtr := (*net.Conn)(fieldPtr)
+
+	return *connPtr
 }

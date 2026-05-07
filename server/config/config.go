@@ -14,6 +14,9 @@ type Config struct {
 	MaxClients        int      `json:"max_clients"`
 	InitPassword      [32]byte `json:"init_password"`
 	UsersPath         string   `json:"users_path"`
+	PathTLSCert       string   `json:"path_tls_cert"`
+	PathTLSKey        string   `json:"path_tls_key"`
+	TLSEnable         bool     `json:"tls_enable"`
 	UpdateThroughSalt bool     `json:"update_through_salt"`
 }
 
@@ -70,11 +73,15 @@ func DefaultConfig() (config *Config) {
 	defaultPassword := sha256.Sum256([]byte("password"))
 
 	return &Config{
-		Host:         "0.0.0.0",
-		Port:         16020,
-		MaxClients:   128,
-		InitPassword: defaultPassword,
-		UsersPath:    "./users.json",
+		Host:              "0.0.0.0",
+		Port:              16020,
+		MaxClients:        128,
+		InitPassword:      defaultPassword,
+		UsersPath:         "./users.json",
+		PathTLSCert:       "/certificate.crt",
+		PathTLSKey:        "/certificate.key",
+		TLSEnable:         false,
+		UpdateThroughSalt: false,
 	}
 }
 
