@@ -4,5 +4,8 @@
     "max_clients": 128,
     "init_password": "0000000000000000000000000000000000000000000000000000000000000000",
     "users_path": "/home/test/users",
+    "path_tls_cert": "/certificate.crt",
+    "path_tls_key": "/certificate.key",
+    "tls_enable": false,
     "update_through_salt": false
 }
