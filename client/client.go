@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
 	"math/big"
@@ -276,6 +277,7 @@ func (c *Client) Stop() error {
 	}
 	c.packetBuffer = []*packets.StreamingPacket{packet}
 	c.sendBuffer()
+	c.conn.Close()
 	c.logger.Debug("Closing tunnel interface")
 	err = (*c.tunnel).Close()
 	if err != nil {
@@ -305,7 +307,6 @@ func (c *Client) writerTunnel() {
 			if err != nil {
 				if err.Error() == "EOF" {
 					c.logger.Debug("Writer tunnel: EOF received, stopping client")
-					c.Stop()
 					return
 				}
 				c.logger.Error("Writer tunnel: error reading packet: %v", err)
@@ -461,11 +462,37 @@ func (c *Client) sendBuffer() {
 	defer c.bufferLock.Unlock()
 
 	for i, packet := range c.packetBuffer {
-		_, err := c.conn.Write(packet.GetRawData())
-		if err != nil {
-			c.logger.Error("Packet transmission error: %v", err)
+		rawData := packet.GetRawData()
+		writeTimeout := 5 * time.Second
+
+		for {
+			select {
+			case <-c.stopCh:
+				c.logger.Info("Sender stopped, cancelling packet %d transmission", i)
+				return
+			default:
+			}
+
+			if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+				c.logger.Error("Failed to set write deadline: %v", err)
+				return
+			}
+
+			_, err := c.conn.Write(rawData)
+
+			if err == nil {
+				c.logger.Trace("Sender: packet %d sent, size=%d bytes", i, len(rawData))
+				break
+			}
+
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				c.logger.Error("Write timeout, retrying... (stop signal check in next iteration)")
+				continue
+			}
+
+			c.logger.Error("Packet transmission unrecoverable error: %v", err)
+			break
 		}
-		c.logger.Trace("Sender: packet %d sent, size=%d bytes", i, len(packet.GetRawData()))
 	}
 
 	n, err := rand.Int(rand.Reader, big.NewInt(4))
@@ -544,21 +571,32 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	remaining := length
 	offset := 0
 
+	c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
 	for remaining > 0 {
-		n, err := c.conn.Read(data[offset:])
-		if err != nil {
-			return nil, err
-		}
-		if n < 0 {
-			n = 0
-		}
+		select {
+		case <-c.stopCh:
+			return nil, errors.New("stoppig")
+		default:
+			n, err := c.conn.Read(data[offset:])
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
+					continue
+				}
+				return nil, err
+			}
+			if n < 0 {
+				n = 0
+			}
 
-		remaining -= uint16(n)
-		offset += n
+			remaining -= uint16(n)
+			offset += n
+		}
 	}
 
 	return data, nil
 }
+
 func GetRawConn(tlsConn net.Conn) net.Conn {
 	v := reflect.ValueOf(tlsConn).Elem()
 
