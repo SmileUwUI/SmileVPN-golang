@@ -21,6 +21,7 @@ func main() {
 		port               int
 		loggerLevel        int
 		updateThroughSalt  bool
+		batching           bool
 	)
 
 	flag.StringVar(&usernameString, "u", "", "Hex username (short)")
@@ -34,6 +35,9 @@ func main() {
 
 	flag.BoolVar(&updateThroughSalt, "U", false, "Update keys through salt (short)")
 	flag.BoolVar(&updateThroughSalt, "update-through-salt", false, "Update keys through salt")
+
+	flag.BoolVar(&updateThroughSalt, "b", false, " Group the packages into batches (short)")
+	flag.BoolVar(&updateThroughSalt, "batching", false, " Group the packages into batches")
 
 	flag.StringVar(&host, "h", "", "Host (short)")
 	flag.StringVar(&host, "host", "", "Host")
@@ -147,7 +151,7 @@ func main() {
 
 	log := logger.NewLogger(loggerLevel)
 
-	clientInstance, err := client.NewClient(host, hostName, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, log)
+	clientInstance, err := client.NewClient(host, hostName, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, batching, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to create client: %v\n", err)
 		os.Exit(1)

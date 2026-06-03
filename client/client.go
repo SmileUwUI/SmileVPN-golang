@@ -40,6 +40,7 @@ type Client struct {
 	countRecv                uint32
 	countSent                uint32
 	updateThroughSalt        bool
+	batching                 bool
 	ephemeralPublicClientKey *ecdh.PublicKey
 	hasher                   hash.Hash
 	hasherLock               sync.Mutex
@@ -49,7 +50,7 @@ type Client struct {
 	stopCh chan struct{}
 }
 
-func NewClient(host, hostName string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt bool, logger *logger.Logger) (client *Client, err error) {
+func NewClient(host, hostName string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt, batching bool, logger *logger.Logger) (client *Client, err error) {
 	logger.Trace("Creating new client instance for %s:%d", host, port)
 	return &Client{
 		host:              host,
@@ -61,6 +62,7 @@ func NewClient(host, hostName string, port int, initPassword [32]byte, username,
 		logger:            logger,
 		packetBuffer:      []*packets.StreamingPacket{},
 		updateThroughSalt: updateThroughSalt,
+		batching:          batching,
 		sizeBatch:         1,
 		hasher:            sha256.New(),
 		stopCh:            make(chan struct{}),
@@ -507,6 +509,42 @@ func (c *Client) sendBuffer() {
 }
 
 func (c *Client) write(packet *packets.StreamingPacket) {
+	if !c.batching {
+		go func() {
+			writeTimeout := 5 * time.Second
+			rawData := packet.GetRawData()
+			for {
+				select {
+				case <-c.stopCh:
+					return
+				default:
+				}
+
+				if err := c.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+					c.logger.Error("Failed to set write deadline: %v", err)
+					return
+				}
+
+				_, err := c.conn.Write(rawData)
+				if err == nil {
+					c.logger.Trace("Sender: packet sent, size=%d bytes", len(rawData))
+					break
+				}
+
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					c.logger.Error("Write timeout, retrying... (stop signal check in next iteration)")
+					continue
+				}
+
+				c.logger.Error("Packet transmission unrecoverable error: %v", err)
+				break
+			}
+
+			c.logger.Trace("Send packet, size=%d bytes", len(rawData))
+		}()
+		return
+	}
+
 	c.bufferLock.Lock()
 	defer c.bufferLock.Unlock()
 
