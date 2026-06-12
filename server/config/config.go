@@ -12,6 +12,7 @@ type Config struct {
 	Host              string   `json:"host"`
 	Port              int      `json:"port"`
 	MaxClients        int      `json:"max_clients"`
+	NetMask           string   `json:"net_mask"`
 	InitPassword      [32]byte `json:"init_password"`
 	UsersPath         string   `json:"users_path"`
 	PathTLSCert       string   `json:"path_tls_cert"`
@@ -76,6 +77,7 @@ func DefaultConfig() (config *Config) {
 		Host:              "0.0.0.0",
 		Port:              16020,
 		MaxClients:        128,
+		NetMask:           "10.8.83.0/24",
 		InitPassword:      defaultPassword,
 		UsersPath:         "./users.json",
 		PathTLSCert:       "/certificate.crt",

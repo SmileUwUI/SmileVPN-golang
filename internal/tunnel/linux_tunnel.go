@@ -214,7 +214,7 @@ func (t *LinuxTunnel) DeleteRoutes(routes []*net.IPNet) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute bool) error {
+func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute, createNAT bool) error {
 	routeInfo, err := getDefaultRouteNetlink()
 	if err != nil {
 		return fmt.Errorf("error retrieving route information: %w", err)
@@ -238,7 +238,14 @@ func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute bool) error {
 
 	err = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
 	if err != nil {
-		return err
+		return fmt.Errorf("ip_forward installation error: %w", err)
+	}
+
+	if createNAT {
+		err = exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", fmt.Sprintf("%s/%d", t.ip, t.getPrefixLen()), "-o", routeInfo.Interface, "-j", "MASQUERADE").Run()
+		if err != nil {
+			return fmt.Errorf("iptables creation error: %w", err)
+		}
 	}
 
 	if setDefaultRoute {
@@ -251,7 +258,7 @@ func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute bool) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Down() error {
+func (t *LinuxTunnel) Down(deleteNAT bool) error {
 	err := t.restoreDefaultRoute()
 	if err != nil {
 		return err
@@ -262,12 +269,19 @@ func (t *LinuxTunnel) Down() error {
 		return fmt.Errorf("failed to bring down interface: %w", err)
 	}
 
+	if deleteNAT {
+		cmd = exec.Command("iptables", "-t", "nat", "-F")
+		if err = cmd.Run(); err != nil {
+			return fmt.Errorf("failed to deleted iptables NAT: %w", err)
+		}
+	}
+
 	t.running = false
 	return nil
 }
 
-func (t *LinuxTunnel) Close() error {
-	err := t.Down()
+func (t *LinuxTunnel) Close(deleteNAT bool) error {
+	err := t.Down(deleteNAT)
 	if err != nil {
 		return err
 	}

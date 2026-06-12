@@ -281,7 +281,7 @@ func (c *Client) Stop() error {
 	c.sendBuffer()
 	c.conn.Close()
 	c.logger.Debug("Closing tunnel interface")
-	err = (*c.tunnel).Close()
+	err = (*c.tunnel).Close(false)
 	if err != nil {
 		c.logger.Error("Tunnel close error: %v", err)
 		return err
@@ -379,7 +379,7 @@ func (c *Client) readerTunnel() {
 	}()
 
 	c.logger.Debug("Bringing tunnel up")
-	if err := (*c.tunnel).Up([]string{c.host}, true); err != nil {
+	if err := (*c.tunnel).Up([]string{c.host}, true, false); err != nil {
 		c.logger.Error("Tunnel upping error: %v", err)
 		return
 	}
@@ -387,7 +387,7 @@ func (c *Client) readerTunnel() {
 
 	defer func() {
 		c.logger.Debug("Bringing tunnel down")
-		err := (*c.tunnel).Down()
+		err := (*c.tunnel).Down(false)
 		if err != nil {
 			c.logger.Error("Tunnel down failed: %v", err)
 		}
@@ -458,7 +458,6 @@ func (c *Client) readerTunnel() {
 		}
 	}
 }
-
 func (c *Client) sendBuffer() {
 	c.bufferLock.Lock()
 	defer c.bufferLock.Unlock()

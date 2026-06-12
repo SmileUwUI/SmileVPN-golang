@@ -13,9 +13,9 @@ type Tunnel interface {
 	Netmask() net.IPMask
 	MTU() int
 	SetIP(ip net.IP, netmask net.IPMask) error
-	Up(excludeIPs []string, setDefaultRoute bool) error
-	Down() error
-	Close() error
+	Up(excludeIPs []string, setDefaultRoute, createNAT bool) error
+	Down(deleteNAT bool) error
+	Close(deleteNAT bool) error
 	IsRunning() bool
 	Stats() (*TunnelStats, error)
 }

@@ -25,7 +25,6 @@ func NewIPPool(cidr string) (*IPPool, error) {
 	}
 
 	pool.nextIP = incrementIP(pool.nextIP)
-	pool.nextIP = incrementIP(pool.nextIP)
 
 	return pool, nil
 }

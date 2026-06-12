@@ -39,12 +39,12 @@ type Server struct {
 func NewServer(cfg *config.Config, usersDB *users.Users, logger *logger.Logger) (server *Server, err error) {
 	logger.Trace("Creating new server instance")
 
-	ippool, err := NewIPPool("10.8.83.0/24")
+	ippool, err := NewIPPool(cfg.NetMask)
 	if err != nil {
 		logger.Error("Failed to create IP pool: %v", err)
 		return nil, fmt.Errorf("error creating ip pool: %v", err)
 	}
-	logger.Debug("IP pool created with subnet 10.8.83.0/24")
+	logger.Debug("IP pool created with subnet %s", cfg.NetMask)
 
 	return &Server{
 		config:  cfg,
@@ -71,11 +71,13 @@ func (s *Server) Start() error {
 	s.listener = listener
 	s.logger.Debug("TCP listener created on %s", addr)
 
+	ip, mask, err := net.ParseCIDR("10.8.83.0/24")
+
 	tun, err := tunnel.NewLinuxTunnel(
 		"tun0",
 		1500,
-		net.ParseIP("10.8.83.1"),
-		net.IPv4Mask(255, 255, 255, 0),
+		ip,
+		mask.Mask,
 	)
 
 	if err != nil {
@@ -86,7 +88,7 @@ func (s *Server) Start() error {
 	s.tunnel = tun.(*tunnel.LinuxTunnel)
 	s.logger.Debug("Tunnel interface tun0 created with MTU=1500, IP=10.8.83.1/24")
 
-	err = s.tunnel.Up([]string{}, false)
+	err = s.tunnel.Up([]string{}, false, true)
 	if err != nil {
 		s.logger.Error("Failed to bring tunnel up: %v", err)
 		return err
