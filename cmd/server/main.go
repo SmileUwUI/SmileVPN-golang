@@ -64,5 +64,5 @@ func main() {
 		syscall.SIGABRT,
 	)
 	<-sigChan
-
+	serverInstance.Stop()
 }

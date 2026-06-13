@@ -7,6 +7,7 @@ import (
 	"SmileVPN/internal/tunnel"
 	"SmileVPN/server/config"
 	"SmileVPN/server/users"
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
@@ -25,7 +26,7 @@ type Server struct {
 	config      *config.Config
 	users       *users.Users
 	ipPool      *IPPool
-	listener    net.Listener
+	listener    *net.TCPListener
 	wg          sync.WaitGroup
 	clientCount int32
 	clients     map[string]*Client
@@ -68,7 +69,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start TCP server: %w", err)
 	}
 
-	s.listener = listener
+	s.listener, _ = listener.(*net.TCPListener)
 	s.logger.Debug("TCP listener created on %s", addr)
 
 	ip, mask, err := net.ParseCIDR("10.8.83.0/24")
@@ -98,6 +99,7 @@ func (s *Server) Start() error {
 	s.logger.Info("Starting the main VPN operation cycle")
 	s.logger.Debug("Launching goroutines: acceptConnections, tunnelReader, cleanupIdleClients")
 
+	s.wg.Add(3)
 	go s.acceptConnections()
 	go s.tunnelReader()
 	go s.cleanupIdleClients()
@@ -105,7 +107,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
+func (s *Server) Stop() {
+	close(s.stopCh)
+	s.logger.Debug("Waiting for the goroutines to finish")
+	s.wg.Wait()
+	s.tunnel.Close(true, false)
+}
+
 func (s *Server) acceptConnections() {
+	defer s.wg.Done()
 	s.logger.Debug("Accept connections goroutine started")
 
 	for {
@@ -114,10 +124,17 @@ func (s *Server) acceptConnections() {
 			s.logger.Debug("Accept connections received stop signal, exiting")
 			return
 		default:
+			s.listener.SetDeadline(time.Now().Add(5 * time.Second))
 			conn, err := s.listener.Accept()
 			if err != nil {
+				if errOp, ok := err.(*net.OpError); ok && errOp.Timeout() {
+					s.listener.SetDeadline(time.Now().Add(5 * time.Second))
+					continue
+				}
+
 				select {
 				case <-s.stopCh:
+					s.logger.Debug("Accept connections received stop signal, exiting")
 					return
 				default:
 					s.logger.Error("Accept error: %v", err)
@@ -147,11 +164,6 @@ func (s *Server) acceptConnections() {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer func() {
-		s.wg.Done()
-		s.decrementClientCount()
-	}()
-
 	connTCP := conn.(*net.TCPConn)
 	clientAddr := connTCP.RemoteAddr().String()
 	s.logger.Trace("Handling new connection from %s", clientAddr)
@@ -231,112 +243,121 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) tunnelReader() {
+	defer s.wg.Done()
 	s.logger.Info("Tunnel reader started")
 	s.logger.Debug("Tunnel reader goroutine: entering main loop")
 
 	for {
-		rawPacket := make([]byte, 65535)
-		n, err := s.tunnel.Read(rawPacket)
-		if err != nil {
-			s.logger.Error("Tunnel read error: %v", err)
-			continue
-		}
-		rawPacket = rawPacket[:n]
-
-		if n < 20 {
-			s.logger.Trace("Packet too short: %d bytes (minimum 20), skipping", n)
-			continue
-		}
-		s.logger.Trace("Read %d bytes from tunnel", n)
-
-		dstIP := rawPacket[16:20]
-		ipStr := fmt.Sprintf("%d.%d.%d.%d", dstIP[0], dstIP[1], dstIP[2], dstIP[3])
-		s.logger.Trace("Packet destination IP: %s", ipStr)
-
-		s.mu.Lock()
-		client, ok := s.clients[ipStr]
-		s.mu.Unlock()
-		if !ok {
-			s.logger.Debug("No client found for destination IP: %s", ipStr)
-			continue
-		}
-
-		if client.roundECDHLock != nil {
-			s.logger.Trace("Waiting for ECDH lock for client %s", client.addr)
-			<-client.roundECDHLock
-			s.logger.Trace("ECDH lock acquired for client %s", client.addr)
-		}
-
-		salt := []byte{}
-		if s.config.UpdateThroughSalt {
-			salt, err = crypto.RandomBytes(8)
+		select {
+		case <-s.stopCh:
+			s.logger.Debug("Tunnel reader stopped")
+			return
+		default:
+			rawPacket := make([]byte, 65535)
+			n, err := s.tunnel.Read(rawPacket)
 			if err != nil {
-				s.logger.Error("Failed to generate salt for client %s: %v", client.addr, err)
+				if err != context.DeadlineExceeded {
+					s.logger.Error("Tunnel read error: %v", err)
+				}
 				continue
 			}
-			s.logger.Trace("Salt generated for client %s: %x", client.addr, salt)
+			rawPacket = rawPacket[:n]
 
-		}
-
-		packet := packets.NewPlainPacket()
-		packet.AddData(rawPacket)
-
-		needsECDH := client.countSent >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
-		s.logger.Trace("Client %s: countSent=%d, lastRoundECDH=%v, needsECDH=%v",
-			client.addr, client.countSent, time.Since(client.lastRoundECDH), needsECDH)
-
-		if needsECDH {
-			s.logger.Debug("Initiating ECDH rekey for client %s (countSent=%d, lastRoundECDH=%v)",
-				client.addr, client.countSent, time.Since(client.lastRoundECDH))
-
-			curve := ecdh.X25519()
-			privateKey, err := curve.GenerateKey(rand.Reader)
-			if err != nil {
-				s.logger.Error("Failed to generate ephemeral key for client %s: %v", client.addr, err)
-				return
-			}
-			s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
-
-			client.ephemeralPrivateServerKey = privateKey
-			err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true, false)
-			if err != nil {
-				s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
+			if n < 20 {
+				s.logger.Trace("Packet too short: %d bytes (minimum 20), skipping", n)
 				continue
 			}
-			s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
-		} else {
-			err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false, false)
+			s.logger.Trace("Read %d bytes from tunnel", n)
+
+			dstIP := rawPacket[16:20]
+			ipStr := fmt.Sprintf("%d.%d.%d.%d", dstIP[0], dstIP[1], dstIP[2], dstIP[3])
+			s.logger.Trace("Packet destination IP: %s", ipStr)
+
+			s.mu.Lock()
+			client, ok := s.clients[ipStr]
+			s.mu.Unlock()
+			if !ok {
+				s.logger.Debug("No client found for destination IP: %s", ipStr)
+				continue
+			}
+
+			if client.roundECDHLock != nil {
+				s.logger.Trace("Waiting for ECDH lock for client %s", client.addr)
+				<-client.roundECDHLock
+				s.logger.Trace("ECDH lock acquired for client %s", client.addr)
+			}
+
+			salt := []byte{}
+			if s.config.UpdateThroughSalt {
+				salt, err = crypto.RandomBytes(8)
+				if err != nil {
+					s.logger.Error("Failed to generate salt for client %s: %v", client.addr, err)
+					continue
+				}
+				s.logger.Trace("Salt generated for client %s: %x", client.addr, salt)
+
+			}
+
+			packet := packets.NewPlainPacket()
+			packet.AddData(rawPacket)
+
+			needsECDH := client.countSent >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
+			s.logger.Trace("Client %s: countSent=%d, lastRoundECDH=%v, needsECDH=%v",
+				client.addr, client.countSent, time.Since(client.lastRoundECDH), needsECDH)
+
+			if needsECDH {
+				s.logger.Debug("Initiating ECDH rekey for client %s (countSent=%d, lastRoundECDH=%v)",
+					client.addr, client.countSent, time.Since(client.lastRoundECDH))
+
+				curve := ecdh.X25519()
+				privateKey, err := curve.GenerateKey(rand.Reader)
+				if err != nil {
+					s.logger.Error("Failed to generate ephemeral key for client %s: %v", client.addr, err)
+					return
+				}
+				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
+
+				client.ephemeralPrivateServerKey = privateKey
+				err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true, false)
+				if err != nil {
+					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
+					continue
+				}
+				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
+			} else {
+				err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false, false)
+				if err != nil {
+					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
+					continue
+				}
+				s.logger.Trace("Packet assembled without ECDH flag for client %s", client.addr)
+			}
+
+			_, err = client.conn.Write(packet.GetRawData())
 			if err != nil {
-				s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
+				if errors.Is(err, net.ErrClosed) {
+					s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
+					s.ipPool.ReleaseIP(*client.localIP)
+					client.Close()
+					delete(s.clients, client.localIP.String())
+					continue
+				}
+				s.logger.Error("Failed to write packet to client %s: %v", client.addr, err)
 				continue
 			}
-			s.logger.Trace("Packet assembled without ECDH flag for client %s", client.addr)
-		}
+			s.logger.Trace("Packet written to client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-		_, err = client.conn.Write(packet.GetRawData())
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
-				s.ipPool.ReleaseIP(*client.localIP)
-				client.Close()
-				delete(s.clients, client.localIP.String())
-				continue
+			if packet.GetEcdhFlag() {
+				s.logger.Debug("ECDH flag set for client %s, creating lock", client.addr)
+				client.roundECDHLock = make(chan struct{}, 1)
 			}
-			s.logger.Error("Failed to write packet to client %s: %v", client.addr, err)
-			continue
-		}
-		s.logger.Trace("Packet written to client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-		if packet.GetEcdhFlag() {
-			s.logger.Debug("ECDH flag set for client %s, creating lock", client.addr)
-			client.roundECDHLock = make(chan struct{}, 1)
+			if s.config.UpdateThroughSalt {
+				client.computeNextSessionSentKey(salt)
+			}
+			client.countSent++
+			s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent)
 		}
-
-		if s.config.UpdateThroughSalt {
-			client.computeNextSessionSentKey(salt)
-		}
-		client.countSent++
-		s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent)
 	}
 }
 
@@ -344,6 +365,7 @@ func (s *Server) handleClient(client *Client) {
 	s.logger.Info("Starting to handle client %s (IP: %s)", client.addr, client.localIP.String())
 	defer func() {
 		s.logger.Info("Stopping to handle client %s (IP: %s)", client.addr, client.localIP.String())
+		s.wg.Done()
 		client.conn.Close()
 	}()
 
@@ -466,7 +488,10 @@ func (s *Server) handleClient(client *Client) {
 func (s *Server) cleanupIdleClients() {
 	s.logger.Debug("Cleanup idle clients goroutine started")
 	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
+	defer func() {
+		s.wg.Done()
+		ticker.Stop()
+	}()
 
 	for {
 		select {
