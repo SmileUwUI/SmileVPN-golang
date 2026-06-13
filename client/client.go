@@ -5,6 +5,7 @@ import (
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
 	"SmileVPN/internal/tunnel"
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -405,6 +406,9 @@ func (c *Client) readerTunnel() {
 		default:
 			n, err := (*c.tunnel).Read(rawPacket)
 			if err != nil {
+				if err == context.DeadlineExceeded {
+					continue
+				}
 				c.logger.Error("Error reading a packet from the tunnel: %v", err)
 				return
 			}
