@@ -14,8 +14,8 @@ type Tunnel interface {
 	MTU() int
 	SetIP(ip net.IP, netmask net.IPMask) error
 	Up(excludeIPs []string, setDefaultRoute, createNAT bool) error
-	Down(deleteNAT bool) error
-	Close(deleteNAT bool) error
+	Down(deleteNAT, delDefaultRoute bool) error
+	Close(deleteNAT, delDefaultRoute bool) error
 	IsRunning() bool
 	Stats() (*TunnelStats, error)
 }

@@ -281,7 +281,7 @@ func (c *Client) Stop() error {
 	c.sendBuffer()
 	c.conn.Close()
 	c.logger.Debug("Closing tunnel interface")
-	err = (*c.tunnel).Close(false)
+	err = (*c.tunnel).Close(false, true)
 	if err != nil {
 		c.logger.Error("Tunnel close error: %v", err)
 		return err
@@ -387,7 +387,7 @@ func (c *Client) readerTunnel() {
 
 	defer func() {
 		c.logger.Debug("Bringing tunnel down")
-		err := (*c.tunnel).Down(false)
+		err := (*c.tunnel).Close(false, true)
 		if err != nil {
 			c.logger.Error("Tunnel down failed: %v", err)
 		}

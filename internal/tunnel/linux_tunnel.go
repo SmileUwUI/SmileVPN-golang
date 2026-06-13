@@ -1,11 +1,13 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -66,7 +68,28 @@ func (t *LinuxTunnel) Name() string {
 }
 
 func (t *LinuxTunnel) Read(packet []byte) (int, error) {
-	return t.iface.Read(packet)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+	defer cancel()
+
+	return t.ReadWithContext(ctx, packet)
+}
+
+func (t *LinuxTunnel) ReadWithContext(ctx context.Context, packet []byte) (int, error) {
+	done := make(chan struct{})
+	var n int
+	var err error
+
+	go func() {
+		n, err = t.iface.Read(packet)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return n, err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 func (t *LinuxTunnel) Write(packet []byte) (int, error) {
@@ -258,20 +281,22 @@ func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute, createNAT bool) e
 	return nil
 }
 
-func (t *LinuxTunnel) Down(deleteNAT bool) error {
-	err := t.restoreDefaultRoute()
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.Command("ip", "link", "set", "dev", t.name, "down")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to bring down interface: %w", err)
+func (t *LinuxTunnel) Down(deleteNAT, delDefaultRoute bool) error {
+	var cmd *exec.Cmd
+	if delDefaultRoute {
+		err := t.restoreDefaultRoute()
+		if err != nil {
+			return err
+		}
+		cmd = exec.Command("ip", "link", "set", "dev", t.name, "down")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to bring down interface: %w", err)
+		}
 	}
 
 	if deleteNAT {
 		cmd = exec.Command("iptables", "-t", "nat", "-F")
-		if err = cmd.Run(); err != nil {
+		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to deleted iptables NAT: %w", err)
 		}
 	}
@@ -280,8 +305,8 @@ func (t *LinuxTunnel) Down(deleteNAT bool) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Close(deleteNAT bool) error {
-	err := t.Down(deleteNAT)
+func (t *LinuxTunnel) Close(deleteNAT, delDefaultRoute bool) error {
+	err := t.Down(deleteNAT, delDefaultRoute)
 	if err != nil {
 		return err
 	}
