@@ -1,11 +1,11 @@
 package server
 
 import (
+	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
 	"SmileVPN/server/users"
 	"crypto/ecdh"
-	"crypto/sha256"
 	"encoding/binary"
 	"net"
 	"sync"
@@ -21,8 +21,8 @@ type Client struct {
 	countSent                 atomic.Uint32
 	countRecvBytes            atomic.Uint32
 	countSentBytes            atomic.Uint32
-	sessionSentKey            []byte
-	sessionRecvKey            []byte
+	sessionSentKey            *crypto.Key
+	sessionRecvKey            *crypto.Key
 	createdAt                 time.Time
 	lastActive                time.Time
 	lastRoundECDH             time.Time
@@ -35,21 +35,11 @@ type Client struct {
 }
 
 func (c *Client) computeNextSessionRecvKey(salt []byte) {
-	hasher := sha256.New()
-	hasher.Write(c.sessionRecvKey)
-	hasher.Write([]byte(":"))
-	hasher.Write(salt)
-
-	c.sessionRecvKey = hasher.Sum(nil)
+	c.sessionRecvKey.UpdateKey(salt)
 }
 
 func (c *Client) computeNextSessionSentKey(salt []byte) {
-	hasher := sha256.New()
-	hasher.Write(c.sessionSentKey)
-	hasher.Write([]byte(":"))
-	hasher.Write(salt)
-
-	c.sessionSentKey = hasher.Sum(nil)
+	c.sessionSentKey.UpdateKey(salt)
 }
 
 func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {

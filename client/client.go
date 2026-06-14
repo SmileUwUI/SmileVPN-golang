@@ -12,7 +12,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"math/big"
 	"net"
 	"reflect"
@@ -31,8 +30,8 @@ type Client struct {
 	username                 [16]byte
 	password                 [16]byte
 	conn                     *net.TCPConn
-	sessionSentKey           []byte
-	sessionRecvKey           []byte
+	sessionSentKey           *crypto.Key
+	sessionRecvKey           *crypto.Key
 	secretECDH               []byte
 	packetBuffer             []*packets.StreamingPacket
 	sizeBatch                int
@@ -43,8 +42,6 @@ type Client struct {
 	updateThroughSalt        bool
 	batching                 bool
 	ephemeralPublicClientKey *ecdh.PublicKey
-	hasher                   hash.Hash
-	hasherLock               sync.Mutex
 	bufferLock               sync.Mutex
 
 	wg     sync.WaitGroup
@@ -64,8 +61,9 @@ func NewClient(host, hostName string, port int, initPassword [32]byte, username,
 		packetBuffer:      []*packets.StreamingPacket{},
 		updateThroughSalt: updateThroughSalt,
 		batching:          batching,
+		sessionSentKey:    crypto.NewKey(sha256.New()),
+		sessionRecvKey:    crypto.NewKey(sha256.New()),
 		sizeBatch:         1,
-		hasher:            sha256.New(),
 		stopCh:            make(chan struct{}),
 	}, nil
 }
@@ -100,8 +98,8 @@ func (c *Client) Run() (err error) {
 	c.logger.Debug("Local address: %s, Remote address: %s", c.conn.LocalAddr(), c.conn.RemoteAddr())
 
 	c.logger.Info("A handshake with the server has begun")
-	c.sessionRecvKey = c.initPassword[:]
-	c.sessionSentKey = c.initPassword[:]
+	c.sessionRecvKey.SetKey(c.initPassword[:])
+	c.sessionSentKey.SetKey(c.initPassword[:])
 	c.logger.Trace("Initial session keys set (both recv and sent)")
 
 	packet := packets.NewPlainPacket()
@@ -159,18 +157,12 @@ func (c *Client) Run() (err error) {
 	}
 	c.logger.Trace("First and second salt extracted")
 
-	c.hasher.Reset()
-	c.hasher.Write(c.password[:])
-	c.hasher.Write([]byte(":"))
-	c.hasher.Write(firstSalt)
-	c.sessionSentKey = c.hasher.Sum(nil)
+	c.sessionSentKey.SetKey(c.password[:])
+	c.sessionSentKey.UpdateKey(firstSalt)
 	c.logger.Trace("Session sent key derived from first salt")
 
-	c.hasher.Reset()
-	c.hasher.Write(c.password[:])
-	c.hasher.Write([]byte(":"))
-	c.hasher.Write(secondSalt)
-	c.sessionRecvKey = c.hasher.Sum(nil)
+	c.sessionRecvKey.SetKey(c.password[:])
+	c.sessionRecvKey.UpdateKey(secondSalt)
 	c.logger.Trace("Session recv key derived from second salt")
 
 	okPacket := packets.NewPlainPacket()
@@ -186,7 +178,7 @@ func (c *Client) Run() (err error) {
 	publicClientKey := privateClientKey.PublicKey()
 	c.logger.Debug("ECDH key pair generated")
 
-	err = okPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicClientKey.Bytes(), false, true, false)
+	err = okPacket.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, publicClientKey.Bytes(), false, true, false)
 	if err != nil {
 		c.logger.Error("Assembly error in the packet with connection verification and public key for ECDH: %v", err)
 		return err
@@ -206,7 +198,7 @@ func (c *Client) Run() (err error) {
 	}
 	c.logger.Trace("IP packet received")
 
-	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey)
+	err = ipPacket.DecodeAndDecrypt(c.sessionRecvKey.GetBytes())
 	if err != nil {
 		c.logger.Error("Error decoding or decrypting the ip packet: %v", err)
 		return err
@@ -273,7 +265,7 @@ func (c *Client) Stop() error {
 	c.logger.Trace("Waiting for goroutines to finish")
 	c.wg.Wait()
 	packet := packets.NewPlainPacket()
-	err := packet.PackageAssembly(c.sessionSentKey, []byte{}, []byte{}, false, false, true)
+	err := packet.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, []byte{}, false, false, true)
 	if err != nil {
 		c.logger.Error("Assembly error in the packet: %v", err)
 		return nil
@@ -318,7 +310,7 @@ func (c *Client) writerTunnel() {
 			c.countRecv++
 			c.logger.Trace("Writer tunnel: packet received, countRecv=%d", c.countRecv)
 
-			err = packet.DecodeAndDecrypt(c.sessionRecvKey)
+			err = packet.DecodeAndDecrypt(c.sessionRecvKey.GetBytes())
 			if err != nil {
 				c.logger.Error("Error decoding or decrypting the packet: %v", err)
 				continue
@@ -432,12 +424,12 @@ func (c *Client) readerTunnel() {
 
 			if c.ephemeralPublicClientKey != nil {
 				c.logger.Debug("Reader tunnel: using ephemeral public key for ECDH")
-				err = packet.PackageAssembly(c.sessionSentKey, salt, c.ephemeralPublicClientKey.Bytes(), false, true, false)
+				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), salt, c.ephemeralPublicClientKey.Bytes(), false, true, false)
 				c.ephemeralPublicClientKey = nil
 				c.logger.Trace("Reader tunnel: packet assembled with ECDH flag")
 			} else {
 				c.logger.Trace("Reader tunnel: no ephemeral key, assembling without ECDH")
-				err = packet.PackageAssembly(c.sessionSentKey, salt, []byte{}, false, false, false)
+				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), salt, []byte{}, false, false, false)
 			}
 
 			if err != nil {
@@ -560,26 +552,12 @@ func (c *Client) write(packet *packets.StreamingPacket) {
 }
 
 func (c *Client) computeNextSessionSentKey(salt []byte) {
-	c.hasherLock.Lock()
-	defer c.hasherLock.Unlock()
-
-	c.hasher.Reset()
-	c.hasher.Write(c.sessionSentKey)
-	c.hasher.Write([]byte(":"))
-	c.hasher.Write(salt)
-	c.sessionSentKey = c.hasher.Sum(nil)
+	c.sessionSentKey.UpdateKey(salt)
 	c.logger.Trace("Session sent key updated (new hash computed)")
 }
 
 func (c *Client) computeNextSessionRecvKey(salt []byte) {
-	c.hasherLock.Lock()
-	defer c.hasherLock.Unlock()
-
-	c.hasher.Reset()
-	c.hasher.Write(c.sessionRecvKey)
-	c.hasher.Write([]byte(":"))
-	c.hasher.Write(salt)
-	c.sessionRecvKey = c.hasher.Sum(nil)
+	c.sessionRecvKey.UpdateKey(salt)
 	c.logger.Trace("Session recv key updated (new hash computed)")
 }
 

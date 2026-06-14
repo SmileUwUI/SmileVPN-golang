@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -194,8 +195,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	client := &Client{
 		addr:            clientAddr,
 		conn:            connTCP,
-		sessionRecvKey:  []byte{},
-		sessionSentKey:  []byte{},
+		sessionRecvKey:  crypto.NewKey(sha256.New()),
+		sessionSentKey:  crypto.NewKey(sha256.New()),
 		createdAt:       now,
 		lastActive:      now,
 		lastRoundECDH:   now,
@@ -313,14 +314,14 @@ func (s *Server) tunnelReader() {
 				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
 
 				client.ephemeralPrivateServerKey = privateKey
-				err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, privateKey.PublicKey().Bytes(), false, true, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 					continue
 				}
 				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 			} else {
-				err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, []byte{}, false, false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 					continue
@@ -392,7 +393,7 @@ func (s *Server) handleClient(client *Client) {
 			}
 			s.logger.Trace("Packet received from client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-			err = packet.DecodeAndDecrypt(client.sessionRecvKey)
+			err = packet.DecodeAndDecrypt(client.sessionRecvKey.GetBytes())
 			if err != nil {
 				s.logger.Error("Failed to decrypt packet from client %s: %v", client.addr, err)
 				continue
