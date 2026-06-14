@@ -6,7 +6,6 @@ import (
 	"SmileVPN/server/users"
 	"crypto/ecdh"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -23,8 +22,8 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 		c.logger.Error("Failed to set deadline for client %s: %v", c.addr, err)
 		return err
 	}
-	c.sessionRecvKey = initPassword[:]
-	c.sessionSentKey = initPassword[:]
+	c.sessionRecvKey.SetKey(initPassword[:])
+	c.sessionSentKey.SetKey(initPassword[:])
 	c.logger.Trace("Handshake stage 1: initial session keys set for client %s", c.addr)
 
 	usernamePacket, err := c.readPacket()
@@ -110,7 +109,6 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	}
 	c.logger.Trace("Handshake stage 1: salt packet sent to client %s, size=%d bytes", c.addr, len(saltPacket.GetRawData()))
 
-	sessionRecvKeyHasher := sha256.New()
 	password := user.GetPassword()
 	firstSalt, err := saltPacket.GetSlicePlainData(0, 16)
 	if err != nil {
@@ -120,13 +118,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	}
 	c.logger.Trace("Handshake stage 1: first salt extracted for client %s", c.addr)
 
-	sessionRecvKeyHasher.Write(password[:])
-	sessionRecvKeyHasher.Write([]byte(":"))
-	sessionRecvKeyHasher.Write(firstSalt)
-	c.sessionRecvKey = sessionRecvKeyHasher.Sum(nil)
+	c.sessionRecvKey.SetKey(password[:])
+	c.sessionRecvKey.UpdateKey(firstSalt)
 	c.logger.Debug("Handshake stage 1: session recv key derived for client %s", c.addr)
 
-	sessionSentKeyHasher := sha256.New()
 	secondSalt, err := saltPacket.GetSlicePlainData(16, 32)
 	if err != nil {
 		c.logger.Error("Failed to get second salt for client %s: %v", c.addr, err)
@@ -135,10 +130,8 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	}
 	c.logger.Trace("Handshake stage 1: second salt extracted for client %s", c.addr)
 
-	sessionSentKeyHasher.Write(password[:])
-	sessionSentKeyHasher.Write([]byte(":"))
-	sessionSentKeyHasher.Write(secondSalt)
-	c.sessionSentKey = sessionSentKeyHasher.Sum(nil)
+	c.sessionSentKey.SetKey(password[:])
+	c.sessionSentKey.UpdateKey(secondSalt)
 	c.logger.Debug("Handshake stage 1: session sent key derived for client %s", c.addr)
 
 	c.logger.Info("Handshake stage 1 completed for client %s", c.addr)
@@ -157,7 +150,7 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	}
 	c.logger.Trace("Handshake stage 2: packet received from client %s, size=%d bytes", c.addr, len(packet.GetRawData()))
 
-	err = packet.DecodeAndDecrypt(c.sessionRecvKey)
+	err = packet.DecodeAndDecrypt(c.sessionRecvKey.GetBytes())
 	if err != nil {
 		c.logger.Error("Failed to decrypt stage 2 packet from client %s: %v", c.addr, err)
 		c.conn.Close()
@@ -206,7 +199,7 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	ipPacket.AddData(clientIP.To4())
 	c.logger.Trace("Handshake stage 2: IP %s added to packet for client %s", clientIP.String(), c.addr)
 
-	err = ipPacket.PackageAssembly(c.sessionSentKey, []byte{}, publicServerKey.Bytes(), false, true, false)
+	err = ipPacket.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, publicServerKey.Bytes(), false, true, false)
 	if err != nil {
 		c.logger.Error("Failed to package IP packet for client %s: %v", c.addr, err)
 		c.conn.Close()

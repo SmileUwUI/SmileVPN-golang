@@ -10,12 +10,14 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -28,8 +30,8 @@ type Server struct {
 	ipPool      *IPPool
 	listener    *net.TCPListener
 	wg          sync.WaitGroup
-	clientCount int32
-	clients     map[string]*Client
+	clientCount atomic.Int32
+	clients     sync.Map
 	logger      *logger.Logger
 	tunnel      *tunnel.LinuxTunnel
 
@@ -48,12 +50,11 @@ func NewServer(cfg *config.Config, usersDB *users.Users, logger *logger.Logger) 
 	logger.Debug("IP pool created with subnet %s", cfg.NetMask)
 
 	return &Server{
-		config:  cfg,
-		users:   usersDB,
-		ipPool:  ippool,
-		clients: make(map[string]*Client),
-		stopCh:  make(chan struct{}),
-		logger:  logger,
+		config: cfg,
+		users:  usersDB,
+		ipPool: ippool,
+		stopCh: make(chan struct{}),
+		logger: logger,
 	}, nil
 }
 
@@ -142,8 +143,8 @@ func (s *Server) acceptConnections() {
 				}
 			}
 
+			clientCount := int(s.clientCount.Load())
 			s.mu.RLock()
-			clientCount := int(s.clientCount)
 			maxClients := s.config.MaxClients
 			s.mu.RUnlock()
 
@@ -164,6 +165,7 @@ func (s *Server) acceptConnections() {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
 	connTCP := conn.(*net.TCPConn)
 	clientAddr := connTCP.RemoteAddr().String()
 	s.logger.Trace("Handling new connection from %s", clientAddr)
@@ -193,12 +195,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	client := &Client{
 		addr:            clientAddr,
 		conn:            connTCP,
-		countRecv:       0,
-		countSent:       0,
-		countRecvBytes:  0,
-		countSentBytes:  0,
-		sessionRecvKey:  []byte{},
-		sessionSentKey:  []byte{},
+		sessionRecvKey:  crypto.NewKey(sha256.New()),
+		sessionSentKey:  crypto.NewKey(sha256.New()),
 		createdAt:       now,
 		lastActive:      now,
 		lastRoundECDH:   now,
@@ -227,9 +225,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 	s.logger.Info("The handshake process with client %s is complete", clientAddr)
 
-	s.mu.Lock()
-	s.clients[clientIP.String()] = client
-	s.mu.Unlock()
+	s.clients.Store(clientIP.String(), client)
 	s.logger.Debug("Client %s added to clients map with IP %s", clientAddr, clientIP.String())
 
 	err = conn.SetDeadline(time.Time{})
@@ -239,6 +235,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 	s.logger.Trace("Deadline cleared for client %s", clientAddr)
 
+	s.wg.Add(1)
 	go s.handleClient(client)
 }
 
@@ -273,13 +270,12 @@ func (s *Server) tunnelReader() {
 			ipStr := fmt.Sprintf("%d.%d.%d.%d", dstIP[0], dstIP[1], dstIP[2], dstIP[3])
 			s.logger.Trace("Packet destination IP: %s", ipStr)
 
-			s.mu.Lock()
-			client, ok := s.clients[ipStr]
-			s.mu.Unlock()
+			clientAny, ok := s.clients.Load(ipStr)
 			if !ok {
 				s.logger.Debug("No client found for destination IP: %s", ipStr)
 				continue
 			}
+			client := clientAny.(*Client)
 
 			if client.roundECDHLock != nil {
 				s.logger.Trace("Waiting for ECDH lock for client %s", client.addr)
@@ -301,13 +297,13 @@ func (s *Server) tunnelReader() {
 			packet := packets.NewPlainPacket()
 			packet.AddData(rawPacket)
 
-			needsECDH := client.countSent >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
+			needsECDH := client.countSent.Load() >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
 			s.logger.Trace("Client %s: countSent=%d, lastRoundECDH=%v, needsECDH=%v",
-				client.addr, client.countSent, time.Since(client.lastRoundECDH), needsECDH)
+				client.addr, client.countSent.Load(), time.Since(client.lastRoundECDH), needsECDH)
 
 			if needsECDH {
 				s.logger.Debug("Initiating ECDH rekey for client %s (countSent=%d, lastRoundECDH=%v)",
-					client.addr, client.countSent, time.Since(client.lastRoundECDH))
+					client.addr, client.countSent.Load(), time.Since(client.lastRoundECDH))
 
 				curve := ecdh.X25519()
 				privateKey, err := curve.GenerateKey(rand.Reader)
@@ -318,14 +314,14 @@ func (s *Server) tunnelReader() {
 				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
 
 				client.ephemeralPrivateServerKey = privateKey
-				err = packet.PackageAssembly(client.sessionSentKey, salt, privateKey.PublicKey().Bytes(), false, true, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, privateKey.PublicKey().Bytes(), false, true, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 					continue
 				}
 				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 			} else {
-				err = packet.PackageAssembly(client.sessionSentKey, salt, []byte{}, false, false, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, []byte{}, false, false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 					continue
@@ -339,7 +335,7 @@ func (s *Server) tunnelReader() {
 					s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
 					s.ipPool.ReleaseIP(*client.localIP)
 					client.Close()
-					delete(s.clients, client.localIP.String())
+					s.clients.Delete(client.localIP.String())
 					continue
 				}
 				s.logger.Error("Failed to write packet to client %s: %v", client.addr, err)
@@ -355,8 +351,8 @@ func (s *Server) tunnelReader() {
 			if s.config.UpdateThroughSalt {
 				client.computeNextSessionSentKey(salt)
 			}
-			client.countSent++
-			s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent)
+			client.countSent.Add(1)
+			s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent.Load())
 		}
 	}
 }
@@ -381,7 +377,7 @@ func (s *Server) handleClient(client *Client) {
 					s.logger.Info("Client %s connection closed (net.ErrClosed), releasing IP %s", client.addr, client.localIP.String())
 					s.ipPool.ReleaseIP(*client.localIP)
 					client.Close()
-					delete(s.clients, client.localIP.String())
+					s.clients.Delete(client.localIP.String())
 					return
 				}
 
@@ -389,7 +385,7 @@ func (s *Server) handleClient(client *Client) {
 					s.logger.Info("Client %s disconnected (EOF), releasing IP %s", client.addr, client.localIP.String())
 					s.ipPool.ReleaseIP(*client.localIP)
 					client.Close()
-					delete(s.clients, client.localIP.String())
+					s.clients.Delete(client.localIP.String())
 					return
 				}
 				s.logger.Error("Failed to read packet from client %s: %v", client.addr, err)
@@ -397,7 +393,7 @@ func (s *Server) handleClient(client *Client) {
 			}
 			s.logger.Trace("Packet received from client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-			err = packet.DecodeAndDecrypt(client.sessionRecvKey)
+			err = packet.DecodeAndDecrypt(client.sessionRecvKey.GetBytes())
 			if err != nil {
 				s.logger.Error("Failed to decrypt packet from client %s: %v", client.addr, err)
 				continue
@@ -407,15 +403,15 @@ func (s *Server) handleClient(client *Client) {
 				s.logger.Info("Client %s disconnected, releasing IP %s", client.addr, client.localIP.String())
 				s.ipPool.ReleaseIP(*client.localIP)
 				client.Close()
-				delete(s.clients, client.localIP.String())
+				s.clients.Delete(client.localIP.String())
 				return
 			}
 
-			client.countRecv++
+			client.countRecv.Add(1)
 			salt := packet.GetSalt()
 			if len(salt) != 0 {
 				client.computeNextSessionRecvKey(salt)
-				s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv)
+				s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv.Load())
 			}
 
 			if packet.GetEcdhFlag() && client.ephemeralPrivateServerKey != nil {
@@ -439,8 +435,8 @@ func (s *Server) handleClient(client *Client) {
 				client.ephemeralPrivateServerKey = nil
 				client.lastRoundECDH = time.Now()
 
-				client.countRecv = 0
-				client.countSent = 0
+				client.countRecv.Store(0)
+				client.countSent.Store(0)
 				s.logger.Trace("Client %s: counters reset (recv=0, sent=0), lastRoundECDH updated", client.addr)
 
 				client.computeNextSessionSentKey(secret)
@@ -458,9 +454,9 @@ func (s *Server) handleClient(client *Client) {
 				countRecv = 0
 			}
 
-			client.countRecvBytes += uint32(countRecv)
+			client.countRecvBytes.Add(uint32(countRecv))
 			client.mu.Unlock()
-			s.logger.Trace("Client %s: lastActive updated, countRecvBytes=%d", client.addr, client.countRecvBytes)
+			s.logger.Trace("Client %s: lastActive updated, countRecvBytes=%d", client.addr, client.countRecvBytes.Load())
 
 			ipSrc, err := packet.GetSlicePlainData(12, 16)
 			if err != nil {
@@ -487,7 +483,7 @@ func (s *Server) handleClient(client *Client) {
 
 func (s *Server) cleanupIdleClients() {
 	s.logger.Debug("Cleanup idle clients goroutine started")
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer func() {
 		s.wg.Done()
 		ticker.Stop()
@@ -501,47 +497,40 @@ func (s *Server) cleanupIdleClients() {
 		case <-ticker.C:
 			s.logger.Trace("Running idle clients cleanup check")
 
-			s.mu.Lock()
 			idleCount := 0
-			for addr, client := range s.clients {
-				idleTime := time.Since(client.lastActive)
-				if idleTime > 10*time.Minute {
-					s.logger.Info("Client %s (IP: %s) idle for %v, disconnecting", client.addr, addr, idleTime)
-					client.conn.Close()
-					s.ipPool.ReleaseIP(*client.localIP)
-					client.Close()
-					delete(s.clients, addr)
+			s.clients.Range(func(keyAny, valueAny any) bool {
+				key := keyAny.(string)
+				value := valueAny.(*Client)
+
+				idleTime := time.Since(value.lastActive)
+				if idleTime > 1*time.Minute {
+					s.logger.Info("Client %s (IP: %s) idle for %v, disconnecting", value.addr, key, idleTime)
+					value.conn.Close()
+					s.ipPool.ReleaseIP(*value.localIP)
+					value.Close()
+					s.clients.Delete(key)
 					idleCount++
 				}
-			}
+				return true
+			})
+
 			if idleCount > 0 {
 				s.logger.Debug("Cleaned up %d idle clients", idleCount)
 			} else {
 				s.logger.Trace("No idle clients found")
 			}
-			s.mu.Unlock()
 		}
 	}
 }
 
 func (s *Server) incrementClientCount() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.clientCount++
-	s.logger.Trace("Client count incremented to %d", s.clientCount)
+	s.clientCount.Add(1)
+	s.logger.Trace("Client count incremented to %d", s.clientCount.Load())
 }
 
 func (s *Server) decrementClientCount() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.clientCount--
-	s.logger.Trace("Client count decremented to %d", s.clientCount)
-}
-
-func (s *Server) GetClientCount() int32 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.clientCount
+	s.clientCount.Add(-1)
+	s.logger.Trace("Client count decremented to %d", s.clientCount.Load())
 }
 
 func GetRawConn(tlsConn net.Conn) net.Conn {
@@ -549,7 +538,7 @@ func GetRawConn(tlsConn net.Conn) net.Conn {
 
 	connField := v.FieldByName("conn")
 	if !connField.IsValid() {
-		panic("поле conn не найдено")
+		panic("field conn not found")
 	}
 
 	fieldPtr := unsafe.Pointer(connField.UnsafeAddr())
