@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,10 +17,10 @@ type Client struct {
 	addr                      string
 	conn                      *net.TCPConn
 	user                      *users.User //nolint:unus
-	countRecv                 uint32
-	countSent                 uint32
-	countRecvBytes            uint32
-	countSentBytes            uint32
+	countRecv                 atomic.Uint32
+	countSent                 atomic.Uint32
+	countRecvBytes            atomic.Uint32
+	countSentBytes            atomic.Uint32
 	sessionSentKey            []byte
 	sessionRecvKey            []byte
 	createdAt                 time.Time
