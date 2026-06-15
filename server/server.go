@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"reflect"
@@ -73,7 +74,7 @@ func (s *Server) Start() error {
 	s.listener, _ = listener.(*net.TCPListener)
 	s.logger.Debug("TCP listener created on %s", addr)
 
-	ip, mask, err := net.ParseCIDR("10.8.83.0/24")
+	ip, mask, err := net.ParseCIDR(s.config.NetMask)
 
 	tun, err := tunnel.NewLinuxTunnel(
 		"tun0",
@@ -88,7 +89,7 @@ func (s *Server) Start() error {
 	}
 
 	s.tunnel = tun.(*tunnel.LinuxTunnel)
-	s.logger.Debug("Tunnel interface tun0 created with MTU=1500, IP=10.8.83.1/24")
+	s.logger.Debug("Tunnel interface tun0 created with MTU=1500, IP=%s", s.config.NetMask)
 
 	err = s.tunnel.Up([]string{}, false, true)
 	if err != nil {
@@ -333,9 +334,7 @@ func (s *Server) tunnelReader() {
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
-					s.ipPool.ReleaseIP(*client.localIP)
-					client.Close()
-					s.clients.Delete(client.localIP.String())
+					s.disconnectClient(client.localIP.String())
 					continue
 				}
 				s.logger.Error("Failed to write packet to client %s: %v", client.addr, err)
@@ -375,17 +374,13 @@ func (s *Server) handleClient(client *Client) {
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					s.logger.Info("Client %s connection closed (net.ErrClosed), releasing IP %s", client.addr, client.localIP.String())
-					s.ipPool.ReleaseIP(*client.localIP)
-					client.Close()
-					s.clients.Delete(client.localIP.String())
+					s.disconnectClient(client.localIP.String())
 					return
 				}
 
-				if err.Error() == "EOF" {
+				if errors.Is(err, io.EOF) {
 					s.logger.Info("Client %s disconnected (EOF), releasing IP %s", client.addr, client.localIP.String())
-					s.ipPool.ReleaseIP(*client.localIP)
-					client.Close()
-					s.clients.Delete(client.localIP.String())
+					s.disconnectClient(client.localIP.String())
 					return
 				}
 				s.logger.Error("Failed to read packet from client %s: %v", client.addr, err)
@@ -401,9 +396,7 @@ func (s *Server) handleClient(client *Client) {
 			s.logger.Trace("Packet decrypted successfully for client %s", client.addr)
 			if packet.GetDisconnectFlag() {
 				s.logger.Info("Client %s disconnected, releasing IP %s", client.addr, client.localIP.String())
-				s.ipPool.ReleaseIP(*client.localIP)
-				client.Close()
-				s.clients.Delete(client.localIP.String())
+				s.disconnectClient(client.localIP.String())
 				return
 			}
 
@@ -505,10 +498,7 @@ func (s *Server) cleanupIdleClients() {
 				idleTime := time.Since(value.lastActive)
 				if idleTime > 1*time.Minute {
 					s.logger.Info("Client %s (IP: %s) idle for %v, disconnecting", value.addr, key, idleTime)
-					value.conn.Close()
-					s.ipPool.ReleaseIP(*value.localIP)
-					value.Close()
-					s.clients.Delete(key)
+					s.disconnectClient(key)
 					idleCount++
 				}
 				return true
@@ -521,6 +511,20 @@ func (s *Server) cleanupIdleClients() {
 			}
 		}
 	}
+}
+
+func (s *Server) disconnectClient(ip string) {
+	clientAny, ok := s.clients.Load(ip)
+	if !ok {
+		s.logger.Error("The client with IP address %s was not found", ip)
+		return
+	}
+
+	client := clientAny.(*Client)
+	client.Close()
+	s.ipPool.ReleaseIP(*client.localIP)
+	s.clients.Delete(ip)
+	s.decrementClientCount()
 }
 
 func (s *Server) incrementClientCount() {
