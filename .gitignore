@@ -30,5 +30,5 @@ go.work.sum
 *.env.json
 
 # Editor/IDE
-# .idea/
+.idea/
 .vscode/
