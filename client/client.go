@@ -263,9 +263,15 @@ func (c *Client) Stop() error {
 	c.logger.Debug("Closing stop channel")
 	close(c.stopCh)
 	c.logger.Trace("Waiting for goroutines to finish")
+	err := (*c.tunnel).Close(false, true)
+	if err != nil {
+		c.logger.Error("Tunnel close error: %v", err)
+		return err
+	}
+
 	c.wg.Wait()
 	packet := packets.NewPlainPacket()
-	err := packet.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, []byte{}, false, false, true)
+	err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, []byte{}, false, false, true)
 	if err != nil {
 		c.logger.Error("Assembly error in the packet: %v", err)
 		return nil
@@ -274,11 +280,6 @@ func (c *Client) Stop() error {
 	c.sendBuffer()
 	c.conn.Close()
 	c.logger.Debug("Closing tunnel interface")
-	err = (*c.tunnel).Close(false, true)
-	if err != nil {
-		c.logger.Error("Tunnel close error: %v", err)
-		return err
-	}
 	c.logger.Info("The client has been stopped")
 
 	return nil

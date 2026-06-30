@@ -29,7 +29,6 @@ type Client struct {
 	roundECDHLock             chan struct{}
 	ephemeralPrivateServerKey *ecdh.PrivateKey
 	logger                    *logger.Logger
-	maxPacketLength           uint16
 	localIP                   *net.IP
 	mu                        sync.RWMutex
 }

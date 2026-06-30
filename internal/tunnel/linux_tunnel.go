@@ -1,13 +1,11 @@
 package tunnel
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -68,28 +66,7 @@ func (t *LinuxTunnel) Name() string {
 }
 
 func (t *LinuxTunnel) Read(packet []byte) (int, error) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
-	defer cancel()
-
-	return t.ReadWithContext(ctx, packet)
-}
-
-func (t *LinuxTunnel) ReadWithContext(ctx context.Context, packet []byte) (int, error) {
-	done := make(chan struct{})
-	var n int
-	var err error
-
-	go func() {
-		n, err = t.iface.Read(packet)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return n, err
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	}
+	return t.iface.Read(packet)
 }
 
 func (t *LinuxTunnel) Write(packet []byte) (int, error) {

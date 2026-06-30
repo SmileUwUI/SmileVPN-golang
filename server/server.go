@@ -110,10 +110,12 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() {
+	s.logger.Debug("Stopping the server")
 	close(s.stopCh)
+	s.logger.Debug("Closing the tunnel")
+	s.tunnel.Close(true, false)
 	s.logger.Debug("Waiting for the goroutines to finish")
 	s.wg.Wait()
-	s.tunnel.Close(true, false)
 }
 
 func (s *Server) acceptConnections() {
@@ -194,15 +196,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 	connTCP = GetRawConn(tlsConn).(*net.TCPConn)
 
 	client := &Client{
-		addr:            clientAddr,
-		conn:            connTCP,
-		sessionRecvKey:  crypto.NewKey(sha256.New()),
-		sessionSentKey:  crypto.NewKey(sha256.New()),
-		createdAt:       now,
-		lastActive:      now,
-		lastRoundECDH:   now,
-		logger:          s.logger,
-		maxPacketLength: 4096,
+		addr:           clientAddr,
+		conn:           connTCP,
+		sessionRecvKey: crypto.NewKey(sha256.New()),
+		sessionSentKey: crypto.NewKey(sha256.New()),
+		createdAt:      now,
+		lastActive:     now,
+		lastRoundECDH:  now,
+		logger:         s.logger,
 	}
 	s.logger.Info("The handshake process with client %s has begun", clientAddr)
 	s.logger.Debug("Starting handshake stage 1 for client %s", clientAddr)
