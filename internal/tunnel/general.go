@@ -13,9 +13,9 @@ type Tunnel interface {
 	Netmask() net.IPMask
 	MTU() int
 	SetIP(ip net.IP, netmask net.IPMask) error
-	Up(excludeIPs []string, setDefaultRoute, createNAT bool) error
-	Down(deleteNAT, delDefaultRoute bool) error
-	Close(deleteNAT, delDefaultRoute bool) error
+	Up(excludeIPs []string, setDefaultRoute, createNAT, clearConntrack bool) error
+	Down(deleteNAT, delDefaultRoute, clearConntrack bool) error
+	Close(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	IsRunning() bool
 	Stats() (*TunnelStats, error)
 }
@@ -34,5 +34,30 @@ func NewTunnel(name string, mtu int, address net.IP, netmask net.IPMask) (tunnel
 		return NewLinuxTunnel(name, mtu, address, netmask)
 	default:
 		return nil, nil
+	}
+}
+
+func IPs(cidr string) ([]net.IP, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, err
+	}
+
+	var ips []net.IP
+	for currIP := ip.Mask(ipnet.Mask); ipnet.Contains(currIP); inc(currIP) {
+		temp := make(net.IP, len(currIP))
+		copy(temp, currIP)
+		ips = append(ips, temp)
+	}
+
+	return ips, nil
+}
+
+func inc(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
 	}
 }

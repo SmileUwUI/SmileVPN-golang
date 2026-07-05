@@ -214,7 +214,7 @@ func (t *LinuxTunnel) DeleteRoutes(routes []*net.IPNet) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute, createNAT bool) error {
+func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute, createNAT, clearConntrack bool) error {
 	routeInfo, err := getDefaultRouteNetlink()
 	if err != nil {
 		return fmt.Errorf("error retrieving route information: %w", err)
@@ -254,11 +254,34 @@ func (t *LinuxTunnel) Up(excludeIPs []string, setDefaultRoute, createNAT bool) e
 		}
 	}
 
+	if clearConntrack {
+		allIPs, err := IPs(fmt.Sprintf("%s/%d", t.ip, t.getPrefixLen()))
+		if err != nil {
+			return fmt.Errorf("Error parsing: %v", err)
+		}
+
+		for _, ip := range allIPs {
+			outgoing := exec.Command("conntrack", "-D", "-s", ip.String())
+			if err := outgoing.Run(); err != nil {
+				if !strings.Contains(err.Error(), "exit status 1") {
+					fmt.Printf("Error deleting outgoing connections: %v\n", err)
+				}
+			}
+
+			input := exec.Command("conntrack", "-D", "-d", ip.String())
+			if err := input.Run(); err != nil {
+				if !strings.Contains(err.Error(), "exit status 1") {
+					fmt.Printf("Error deleting input connections: %v\n", err)
+				}
+			}
+		}
+	}
+
 	t.running = true
 	return nil
 }
 
-func (t *LinuxTunnel) Down(deleteNAT, delDefaultRoute bool) error {
+func (t *LinuxTunnel) Down(deleteNAT, delDefaultRoute, clearConntrack bool) error {
 	var cmd *exec.Cmd
 	if delDefaultRoute {
 		err := t.restoreDefaultRoute()
@@ -267,14 +290,37 @@ func (t *LinuxTunnel) Down(deleteNAT, delDefaultRoute bool) error {
 		}
 		cmd = exec.Command("ip", "link", "set", "dev", t.name, "down")
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to bring down interface: %w", err)
+			return fmt.Errorf("failed to bring down interface: %v", err)
 		}
 	}
 
 	if deleteNAT {
 		cmd = exec.Command("iptables", "-t", "nat", "-F")
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to deleted iptables NAT: %w", err)
+			return fmt.Errorf("failed to deleted iptables NAT: %v", err)
+		}
+	}
+
+	allIPs, err := IPs(fmt.Sprintf("%s/%d", t.ip, t.getPrefixLen()))
+	if err != nil {
+		return fmt.Errorf("Error parsing: %v", err)
+	}
+
+	if clearConntrack {
+		for _, ip := range allIPs {
+			outgoing := exec.Command("conntrack", "-D", "-s", ip.String())
+			if err := outgoing.Run(); err != nil {
+				if !strings.Contains(err.Error(), "exit status 1") {
+					fmt.Printf("Error deleting outgoing connections: %v\n", err)
+				}
+			}
+
+			input := exec.Command("conntrack", "-D", "-d", ip.String())
+			if err := input.Run(); err != nil {
+				if !strings.Contains(err.Error(), "exit status 1") {
+					fmt.Printf("Error deleting input connections: %v\n", err)
+				}
+			}
 		}
 	}
 
@@ -282,8 +328,8 @@ func (t *LinuxTunnel) Down(deleteNAT, delDefaultRoute bool) error {
 	return nil
 }
 
-func (t *LinuxTunnel) Close(deleteNAT, delDefaultRoute bool) error {
-	err := t.Down(deleteNAT, delDefaultRoute)
+func (t *LinuxTunnel) Close(deleteNAT, delDefaultRoute, clearConntrack bool) error {
+	err := t.Down(deleteNAT, delDefaultRoute, clearConntrack)
 	if err != nil {
 		return err
 	}

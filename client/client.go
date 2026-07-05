@@ -264,7 +264,7 @@ func (c *Client) Stop() error {
 	c.logger.Debug("Closing stop channel")
 	close(c.stopCh)
 	c.logger.Trace("Waiting for goroutines to finish")
-	err := (*c.tunnel).Close(false, true)
+	err := (*c.tunnel).Close(false, true, false)
 	if err != nil {
 		c.logger.Error("Tunnel close error: %v", err)
 		return err
@@ -374,7 +374,7 @@ func (c *Client) readerTunnel() {
 	}()
 
 	c.logger.Debug("Bringing tunnel up")
-	if err := (*c.tunnel).Up([]string{c.host}, true, false); err != nil {
+	if err := (*c.tunnel).Up([]string{c.host}, true, false, false); err != nil {
 		c.logger.Error("Tunnel upping error: %v", err)
 		return
 	}
@@ -382,7 +382,7 @@ func (c *Client) readerTunnel() {
 
 	defer func() {
 		c.logger.Debug("Bringing tunnel down")
-		err := (*c.tunnel).Close(false, true)
+		err := (*c.tunnel).Close(false, true, false)
 		if err != nil {
 			c.logger.Error("Tunnel down failed: %v", err)
 		}
