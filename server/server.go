@@ -16,7 +16,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"os/exec"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -91,7 +93,7 @@ func (s *Server) Start() error {
 	s.tunnel = tun.(*tunnel.LinuxTunnel)
 	s.logger.Debug("Tunnel interface tun0 created with MTU=1500, IP=%s", s.config.NetMask)
 
-	err = s.tunnel.Up([]string{}, false, true)
+	err = s.tunnel.Up([]string{}, false, true, true)
 	if err != nil {
 		s.logger.Error("Failed to bring tunnel up: %v", err)
 		return err
@@ -113,7 +115,7 @@ func (s *Server) Stop() {
 	s.logger.Debug("Stopping the server")
 	close(s.stopCh)
 	s.logger.Debug("Closing the tunnel")
-	s.tunnel.Close(true, false)
+	s.tunnel.Close(true, false, true)
 	s.logger.Debug("Waiting for the goroutines to finish")
 	s.wg.Wait()
 }
@@ -527,6 +529,20 @@ func (s *Server) disconnectClient(ip string) {
 	client.Close()
 	s.ipPool.ReleaseIP(*client.localIP)
 	s.clients.Delete(ip)
+
+	outgoing := exec.Command("conntrack", "-D", "-s", ip)
+	if err := outgoing.Run(); err != nil {
+		if !strings.Contains(err.Error(), "no such") {
+			s.logger.Error("Error deleting outgoing connections: %v", err)
+		}
+	}
+
+	input := exec.Command("conntrack", "-D", "-d", ip)
+	if err := input.Run(); err != nil {
+		if !strings.Contains(err.Error(), "no such") {
+			s.logger.Error("Error deleting input connections: %v", err)
+		}
+	}
 	s.decrementClientCount()
 }
 
