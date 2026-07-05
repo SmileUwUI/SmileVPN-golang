@@ -158,11 +158,19 @@ func (c *Client) Run() (err error) {
 	c.logger.Trace("First and second salt extracted")
 
 	c.sessionSentKey.SetKey(c.password[:])
-	c.sessionSentKey.UpdateKey(firstSalt)
+	err = c.sessionSentKey.UpdateKey(firstSalt)
+	if err != nil {
+		c.logger.Error("Error updating the session sent key: %v", err)
+		return fmt.Errorf("error when attempting to update the session sent key: %v", err)
+	}
 	c.logger.Trace("Session sent key derived from first salt")
 
 	c.sessionRecvKey.SetKey(c.password[:])
-	c.sessionRecvKey.UpdateKey(secondSalt)
+	err = c.sessionRecvKey.UpdateKey(secondSalt)
+	if err != nil {
+		c.logger.Error("Error updating the session sent key: %v", err)
+		return fmt.Errorf("error when attempting to retrieve the second salt: %v", err)
+	}
 	c.logger.Trace("Session recv key derived from second salt")
 
 	okPacket := packets.NewPlainPacket()
@@ -227,8 +235,14 @@ func (c *Client) Run() (err error) {
 	}
 	c.logger.Debug("ECDH shared secret computed")
 
-	c.computeNextSessionRecvKey(secret)
-	c.computeNextSessionSentKey(secret)
+	err = c.computeNextSessionRecvKey(secret)
+	if err != nil {
+		c.logger.Error("Error computing next session recv key: %v", err)
+	}
+	err = c.computeNextSessionSentKey(secret)
+	if err != nil {
+		c.logger.Error("Error computing next session sent key: %v", err)
+	}
 	c.logger.Trace("Session keys updated with ECDH secret")
 
 	tun, err := tunnel.NewTunnel(
@@ -279,7 +293,11 @@ func (c *Client) Stop() error {
 	}
 	c.packetBuffer = []*packets.StreamingPacket{packet}
 	c.sendBuffer()
-	c.conn.Close()
+	err = c.conn.Close()
+	if err != nil {
+		c.logger.Error("Error closing connection: %v", err)
+		return fmt.Errorf("error when closing connection: %v", err)
+	}
 	c.logger.Debug("Closing tunnel interface")
 	c.logger.Info("The client has been stopped")
 
@@ -328,7 +346,11 @@ func (c *Client) writerTunnel() {
 
 			salt := packet.GetSalt()
 			if len(salt) != 0 {
-				c.computeNextSessionRecvKey(salt)
+				err = c.computeNextSessionRecvKey(salt)
+				if err != nil {
+					c.logger.Error("Error computing next session recv key: %v", err)
+					return
+				}
 			}
 			c.logger.Trace("Writer tunnel: session recv key updated with salt")
 
@@ -359,7 +381,11 @@ func (c *Client) writerTunnel() {
 				c.ephemeralPublicClientKey = privateKey.PublicKey()
 				c.secretECDH = secret
 				c.countRecv = 0
-				c.computeNextSessionRecvKey(c.secretECDH)
+				err = c.computeNextSessionRecvKey(c.secretECDH)
+				if err != nil {
+					c.logger.Error("ECDH flag set error: %v", err)
+					return
+				}
 				c.logger.Debug("Writer tunnel: ECDH rekey completed, countRecv reset to 0")
 			}
 		}
@@ -445,14 +471,22 @@ func (c *Client) readerTunnel() {
 			c.logger.Trace("Reader tunnel: packet queued for sending")
 
 			if c.updateThroughSalt {
-				c.computeNextSessionSentKey(salt)
+				err = c.computeNextSessionSentKey(salt)
+				if err != nil {
+					c.logger.Error("Error computing next session sent key: %v", err)
+					return
+				}
 			}
 			c.logger.Trace("Reader tunnel: session sent key updated with salt")
 
 			if packet.GetEcdhFlag() {
 				c.logger.Debug("Reader tunnel: ECDH flag set, resetting countSent and updating keys with secret")
 				c.countSent = 0
-				c.computeNextSessionSentKey(c.secretECDH)
+				err = c.computeNextSessionSentKey(c.secretECDH)
+				if err != nil {
+					c.logger.Error("ECDH flag set error: %v", err)
+					return
+				}
 				c.logger.Trace("Reader tunnel: countSent reset to 0, session sent key updated with ECDH secret")
 			}
 		}
@@ -555,14 +589,16 @@ func (c *Client) write(packet *packets.StreamingPacket) {
 	c.logger.Trace("Packet added to buffer, current buffer size: %d", len(c.packetBuffer))
 }
 
-func (c *Client) computeNextSessionSentKey(salt []byte) {
-	c.sessionSentKey.UpdateKey(salt)
+func (c *Client) computeNextSessionSentKey(salt []byte) error {
+	err := c.sessionSentKey.UpdateKey(salt)
 	c.logger.Trace("Session sent key updated (new hash computed)")
+	return err
 }
 
-func (c *Client) computeNextSessionRecvKey(salt []byte) {
-	c.sessionRecvKey.UpdateKey(salt)
+func (c *Client) computeNextSessionRecvKey(salt []byte) error {
+	err := c.sessionRecvKey.UpdateKey(salt)
 	c.logger.Trace("Session recv key updated (new hash computed)")
+	return err
 }
 
 func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {
@@ -594,7 +630,10 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	remaining := length
 	offset := 0
 
-	c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
+	err = c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to set read deadline: %v", err)
+	}
 	for remaining > 0 {
 		select {
 		case <-c.stopCh:
@@ -603,7 +642,10 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 			n, err := c.conn.Read(data[offset:])
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
+					err = c.conn.SetReadDeadline(time.Now().Add(time.Second * 1))
+					if err != nil {
+						return nil, fmt.Errorf("failed to set read deadline: %v", err)
+					}
 					continue
 				}
 				return nil, err
@@ -625,7 +667,7 @@ func GetRawConn(tlsConn net.Conn) net.Conn {
 
 	connField := v.FieldByName("conn")
 	if !connField.IsValid() {
-		panic("поле conn не найдено")
+		panic("field conn not found")
 	}
 
 	fieldPtr := unsafe.Pointer(connField.UnsafeAddr())
