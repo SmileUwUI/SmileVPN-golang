@@ -320,14 +320,14 @@ func (s *Server) tunnelReader() {
 
 				client.ephemeralPrivateServerKey = privateKey
 				packet.AddParameter("publicKey", privateKey.PublicKey().Bytes())
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, true, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 					continue
 				}
 				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 			} else {
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 					continue
