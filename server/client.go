@@ -33,12 +33,12 @@ type Client struct {
 	mu                        sync.RWMutex
 }
 
-func (c *Client) computeNextSessionRecvKey(salt []byte) {
-	c.sessionRecvKey.UpdateKey(salt)
+func (c *Client) computeNextSessionRecvKey(salt []byte) error {
+	return c.sessionRecvKey.UpdateKey(salt)
 }
 
-func (c *Client) computeNextSessionSentKey(salt []byte) {
-	c.sessionSentKey.UpdateKey(salt)
+func (c *Client) computeNextSessionSentKey(salt []byte) error {
+	return c.sessionSentKey.UpdateKey(salt)
 }
 
 func (c *Client) readPacket() (packet *packets.StreamingPacket, err error) {
@@ -86,6 +86,6 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	return data, nil
 }
 
-func (c *Client) Close() {
-	c.conn.Close()
+func (c *Client) Close() error {
+	return c.conn.Close()
 }
