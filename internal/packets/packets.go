@@ -16,13 +16,11 @@ const (
 )
 
 type StreamingPacket struct {
-	salt           []byte
 	rawData        []byte
 	plainData      []byte
 	cipherData     []byte
-	publicKey      []byte
+	parameters     map[string][]byte
 	fakeFlag       bool
-	ecdhFlag       bool
 	disconnectFlag bool
 	typePacket     TypePacket
 }
@@ -31,7 +29,7 @@ func NewPlainPacket() (packet *StreamingPacket) {
 	return &StreamingPacket{
 		typePacket: PlainPacket,
 		fakeFlag:   false,
-		ecdhFlag:   false,
+		parameters: make(map[string][]byte),
 	}
 }
 
@@ -39,7 +37,7 @@ func NewRawPacket() (packet *StreamingPacket) {
 	return &StreamingPacket{
 		typePacket: RawPacket,
 		fakeFlag:   false,
-		ecdhFlag:   false,
+		parameters: make(map[string][]byte),
 	}
 }
 
@@ -55,21 +53,42 @@ func (s *StreamingPacket) AddData(data []byte) {
 	}
 }
 
-func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecdh, disconnect bool) (err error) {
+func (s *StreamingPacket) PackageAssembly(key []byte, fake, ecdh, disconnect bool) (err error) {
 	if s.typePacket != PlainPacket {
 		return errors.New("this operation is available only for the PlainPacket package type")
 	}
 
 	s.fakeFlag = fake
-	s.ecdhFlag = ecdh
-	s.publicKey = publicKey
 	s.disconnectFlag = disconnect
-	s.salt = salt
 
 	var nonce []byte
 	var plainData bytes.Buffer
-	plainData.Write(salt)
-	plainData.Write(s.publicKey)
+
+	var parametersTable bytes.Buffer
+	parametersTable.Write([]byte{0x00, 0x00})
+	for key, value := range s.parameters {
+		var rowData bytes.Buffer
+		sizeKey := make([]byte, 2)
+		binary.BigEndian.PutUint16(sizeKey, uint16(len(key)))
+		rowData.Write(sizeKey)
+		rowData.Write([]byte(key))
+		rowData.Write(value)
+
+		rowBytes := rowData.Bytes()
+		sizeRow := make([]byte, 2)
+
+		binary.BigEndian.PutUint16(sizeRow, uint16(len(rowBytes)))
+		parametersTable.Write(sizeRow)
+		parametersTable.Write(rowBytes)
+	}
+
+	parametersBytes := parametersTable.Bytes()
+	sizeParameters := make([]byte, 2)
+	binary.BigEndian.PutUint16(sizeParameters, uint16(len(parametersBytes))-2)
+	parametersBytes[0] = sizeParameters[0]
+	parametersBytes[1] = sizeParameters[1]
+
+	plainData.Write(parametersBytes)
 	plainData.Write(s.plainData)
 
 	s.cipherData, nonce, err = crypto.EncryptChaCha20Poly1305(plainData.Bytes(), key)
@@ -94,18 +113,12 @@ func (s *StreamingPacket) PackageAssembly(key, salt, publicKey []byte, fake, ecd
 		return fmt.Errorf("error generating random bytes: %v", err)
 	}
 
-	flags := flagsBytes[0] & 0b11110000
+	flags := flagsBytes[0] & 0b11111100
 	if s.fakeFlag {
 		flags = flags | 0b00000001
 	}
-	if s.ecdhFlag {
-		flags = flags | 0b00000010
-	}
-	if len(salt) != 0 {
-		flags = flags | 0b00000100
-	}
 	if s.disconnectFlag {
-		flags = flags | 0b00001000
+		flags = flags | 0b00000010
 	}
 
 	s.rawData[0] = flags ^ key[2]
@@ -136,9 +149,8 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	lengthCipherDataBytes[0] = lengthCipherDataBytes[0] ^ key[3]
 	lengthCipherDataBytes[1] = lengthCipherDataBytes[1] ^ key[4]
 
-	s.ecdhFlag = (flags>>1)&1 == 1
 	s.fakeFlag = flags&1 == 1
-	s.disconnectFlag = (flags>>3)&1 == 1
+	s.disconnectFlag = (flags>>1)&1 == 1
 	if s.fakeFlag || s.disconnectFlag {
 		return nil
 	}
@@ -155,18 +167,81 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 		return fmt.Errorf("packet encryption error: %v", err)
 	}
 
-	offsetPlainData := 0
-	if (flags>>2)&1 == 1 {
-		s.salt = s.plainData[:8]
-		offsetPlainData += 8
+	plainDataBuffer := bytes.NewBuffer(s.plainData)
+	sizeTableBytes := make([]byte, 2)
+	_, err = plainDataBuffer.Read(sizeTableBytes)
+	if err != nil {
+		return fmt.Errorf("packet parsing parameters error: %v", err)
 	}
-	if s.ecdhFlag {
-		s.publicKey = s.plainData[offsetPlainData : offsetPlainData+32]
-		offsetPlainData += 32
-	}
-	s.plainData = s.plainData[offsetPlainData:]
 
+	sizeTable := binary.BigEndian.Uint16(sizeTableBytes)
+	parametersTableBytes := make([]byte, sizeTable)
+	_, err = plainDataBuffer.Read(parametersTableBytes)
+	if err != nil {
+		return fmt.Errorf("packet parsing parameters error: %v", err)
+	}
+
+	var counterRowBytes uint16
+	tableBuffer := bytes.NewBuffer(parametersTableBytes)
+	counterRowBytes = 0
+	for {
+		if sizeTable == 0 {
+			break
+		}
+
+		if counterRowBytes >= sizeTable {
+			break
+		}
+
+		sizeRowBytes := make([]byte, 2)
+		_, err = tableBuffer.Read(sizeRowBytes)
+		if err != nil {
+			break
+		}
+		sizeRow := binary.BigEndian.Uint16(sizeRowBytes)
+
+		rowBytes := make([]byte, sizeRow)
+		_, err = tableBuffer.Read(rowBytes)
+		if err != nil {
+			break
+		}
+
+		rowBuffer := bytes.NewBuffer(rowBytes)
+		sizeKeyBytes := make([]byte, 2)
+		_, err = rowBuffer.Read(sizeKeyBytes)
+		if err != nil {
+			break
+		}
+		sizeKey := binary.BigEndian.Uint16(sizeKeyBytes)
+
+		keyBytes := make([]byte, sizeKey)
+		_, err = rowBuffer.Read(keyBytes)
+		if err != nil {
+			break
+		}
+		key := string(keyBytes)
+
+		value := make([]byte, rowBuffer.Len())
+		_, err = rowBuffer.Read(value)
+		if err != nil {
+			break
+		}
+
+		counterRowBytes += 4 + sizeRow + sizeKey + uint16(len(value))
+
+		s.parameters[key] = value
+	}
+
+	s.plainData = make([]byte, plainDataBuffer.Len())
+	_, err = plainDataBuffer.Read(s.plainData)
+	if err != nil {
+		return fmt.Errorf("packet decryption error: %v", err)
+	}
 	return nil
+}
+
+func (s *StreamingPacket) AddParameter(key string, value []byte) {
+	s.parameters[key] = value
 }
 
 func (s *StreamingPacket) GetRawData() (data []byte) {
@@ -178,15 +253,24 @@ func (s *StreamingPacket) GetPlainData() (data []byte) {
 }
 
 func (s *StreamingPacket) GetSalt() (salt []byte) {
-	return s.salt
+	salt, ok := s.parameters["salt"]
+	if !ok {
+		return nil
+	}
+	return salt
 }
 
-func (s *StreamingPacket) GetPublicKey() (publicLey []byte) {
-	return s.publicKey
+func (s *StreamingPacket) GetPublicKey() (publicKey []byte) {
+	publicKey, ok := s.parameters["publicKey"]
+	if !ok {
+		return nil
+	}
+	return publicKey
 }
 
 func (s *StreamingPacket) GetEcdhFlag() (ecdhFlag bool) {
-	return s.ecdhFlag
+	_, ok := s.parameters["publicKey"]
+	return ok
 }
 
 func (s *StreamingPacket) GetDisconnectFlag() (disconnectFlag bool) {

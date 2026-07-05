@@ -117,7 +117,7 @@ func (c *Client) Run() (err error) {
 	packet.AddData(timestampBytes)
 	c.logger.Debug("Username packet prepared with timestamp")
 
-	err = packet.PackageAssembly(c.initPassword[:], []byte{}, []byte{}, false, false, false)
+	err = packet.PackageAssembly(c.initPassword[:], false, false, false)
 	if err != nil {
 		c.logger.Error("Assembly error in the username packet: %v", err)
 		return err
@@ -178,7 +178,8 @@ func (c *Client) Run() (err error) {
 	publicClientKey := privateClientKey.PublicKey()
 	c.logger.Debug("ECDH key pair generated")
 
-	err = okPacket.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, publicClientKey.Bytes(), false, true, false)
+	okPacket.AddParameter("publicKey", publicClientKey.Bytes())
+	err = okPacket.PackageAssembly(c.sessionSentKey.GetBytes(), false, true, false)
 	if err != nil {
 		c.logger.Error("Assembly error in the packet with connection verification and public key for ECDH: %v", err)
 		return err
@@ -271,7 +272,7 @@ func (c *Client) Stop() error {
 
 	c.wg.Wait()
 	packet := packets.NewPlainPacket()
-	err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), []byte{}, []byte{}, false, false, true)
+	err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), false, false, true)
 	if err != nil {
 		c.logger.Error("Assembly error in the packet: %v", err)
 		return nil
@@ -422,15 +423,17 @@ func (c *Client) readerTunnel() {
 			c.logger.Trace("Reader tunnel: salt generated (8 bytes)")
 
 			packet.AddData(rawPacket[:n])
+			packet.AddParameter("salt", salt)
 
 			if c.ephemeralPublicClientKey != nil {
 				c.logger.Debug("Reader tunnel: using ephemeral public key for ECDH")
-				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), salt, c.ephemeralPublicClientKey.Bytes(), false, true, false)
+				packet.AddParameter("publicKey", c.ephemeralPublicClientKey.Bytes())
+				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), false, true, false)
 				c.ephemeralPublicClientKey = nil
 				c.logger.Trace("Reader tunnel: packet assembled with ECDH flag")
 			} else {
 				c.logger.Trace("Reader tunnel: no ephemeral key, assembling without ECDH")
-				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), salt, []byte{}, false, false, false)
+				err = packet.PackageAssembly(c.sessionSentKey.GetBytes(), false, false, false)
 			}
 
 			if err != nil {

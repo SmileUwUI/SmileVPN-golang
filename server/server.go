@@ -298,6 +298,7 @@ func (s *Server) tunnelReader() {
 
 			packet := packets.NewPlainPacket()
 			packet.AddData(rawPacket)
+			packet.AddParameter("salt", salt)
 
 			needsECDH := client.countSent.Load() >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
 			s.logger.Trace("Client %s: countSent=%d, lastRoundECDH=%v, needsECDH=%v",
@@ -316,14 +317,15 @@ func (s *Server) tunnelReader() {
 				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
 
 				client.ephemeralPrivateServerKey = privateKey
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, privateKey.PublicKey().Bytes(), false, true, false)
+				packet.AddParameter("publicKey", privateKey.PublicKey().Bytes())
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, true, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 					continue
 				}
 				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 			} else {
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), salt, []byte{}, false, false, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 					continue
