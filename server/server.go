@@ -16,7 +16,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"os/exec"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -527,6 +529,20 @@ func (s *Server) disconnectClient(ip string) {
 	client.Close()
 	s.ipPool.ReleaseIP(*client.localIP)
 	s.clients.Delete(ip)
+	fmt.Println(ip)
+	outgoing := exec.Command("conntrack", "-D", "-s", ip)
+	if err := outgoing.Run(); err != nil {
+		if !strings.Contains(err.Error(), "no such") {
+			s.logger.Error("Error deleting outgoing connections: %w", err)
+		}
+	}
+
+	input := exec.Command("conntrack", "-D", "-d", ip)
+	if err := input.Run(); err != nil {
+		if !strings.Contains(err.Error(), "no such") {
+			s.logger.Error("Error deleting input connections: %w", err)
+		}
+	}
 	s.decrementClientCount()
 }
 
