@@ -7,7 +7,6 @@ import (
 	"SmileVPN/internal/tunnel"
 	"SmileVPN/server/config"
 	"SmileVPN/server/users"
-	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -273,9 +272,6 @@ func (s *Server) tunnelReader() {
 			rawPacket := make([]byte, 65535)
 			n, err := s.tunnel.Read(rawPacket)
 			if err != nil {
-				if err != context.DeadlineExceeded {
-					s.logger.Error("Tunnel read error: %v", err)
-				}
 				continue
 			}
 			rawPacket = rawPacket[:n]
@@ -351,7 +347,7 @@ func (s *Server) tunnelReader() {
 				s.logger.Trace("Packet assembled without ECDH flag for client %s", client.addr)
 			}
 
-			_, err = client.conn.Write(packet.GetRawData())
+			err = client.write(packet.GetRawData())
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
@@ -386,10 +382,7 @@ func (s *Server) handleClient(client *Client) {
 	defer func() {
 		s.logger.Info("Stopping to handle client %s (IP: %s)", client.addr, client.localIP.String())
 		s.wg.Done()
-		err := client.conn.Close()
-		if err != nil {
-			s.logger.Error("Failed to close client %s: %v", client.addr, err)
-		}
+		s.disconnectClient(client.localIP.String())
 	}()
 
 	for {
