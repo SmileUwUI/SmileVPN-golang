@@ -53,7 +53,7 @@ func (s *StreamingPacket) AddData(data []byte) {
 	}
 }
 
-func (s *StreamingPacket) PackageAssembly(key []byte, fake, ecdh, disconnect bool) (err error) {
+func (s *StreamingPacket) PackageAssembly(key []byte, fake, disconnect bool) (err error) {
 	if s.typePacket != PlainPacket {
 		return errors.New("this operation is available only for the PlainPacket package type")
 	}
@@ -143,7 +143,10 @@ func (s *StreamingPacket) DecodeAndDecrypt(key []byte) (err error) {
 	rawData.Next(5)
 	flags, _ := rawData.ReadByte()
 	lengthCipherDataBytes := make([]byte, 2)
-	rawData.Read(lengthCipherDataBytes)
+	_, err = rawData.Read(lengthCipherDataBytes)
+	if err != nil {
+		return fmt.Errorf("packet decryption error: %v", err)
+	}
 
 	flags = flags ^ key[2]
 	lengthCipherDataBytes[0] = lengthCipherDataBytes[0] ^ key[3]

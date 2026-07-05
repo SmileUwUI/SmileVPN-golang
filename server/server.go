@@ -77,6 +77,10 @@ func (s *Server) Start() error {
 	s.logger.Debug("TCP listener created on %s", addr)
 
 	ip, mask, err := net.ParseCIDR(s.config.NetMask)
+	if err != nil {
+		s.logger.Error("Failed to parse CIDR: %v", err)
+		return fmt.Errorf("failed to parse CIDR: %w", err)
+	}
 
 	tun, err := tunnel.NewLinuxTunnel(
 		"tun0",
@@ -115,7 +119,10 @@ func (s *Server) Stop() {
 	s.logger.Debug("Stopping the server")
 	close(s.stopCh)
 	s.logger.Debug("Closing the tunnel")
-	s.tunnel.Close(true, false, true)
+	err := s.tunnel.Close(true, false, true)
+	if err != nil {
+		s.logger.Error("Error closing tunnel: %v", err)
+	}
 	s.logger.Debug("Waiting for the goroutines to finish")
 	s.wg.Wait()
 }
@@ -130,11 +137,17 @@ func (s *Server) acceptConnections() {
 			s.logger.Debug("Accept connections received stop signal, exiting")
 			return
 		default:
-			s.listener.SetDeadline(time.Now().Add(5 * time.Second))
+			err := s.listener.SetDeadline(time.Now().Add(5 * time.Second))
+			if err != nil {
+				s.logger.Error("Failed to set deadline on accept connection: %v", err)
+			}
 			conn, err := s.listener.Accept()
 			if err != nil {
 				if errOp, ok := err.(*net.OpError); ok && errOp.Timeout() {
-					s.listener.SetDeadline(time.Now().Add(5 * time.Second))
+					err = s.listener.SetDeadline(time.Now().Add(5 * time.Second))
+					if err != nil {
+						s.logger.Error("Failed to set deadline on accept connection: %v", err)
+					}
 					continue
 				}
 
@@ -155,7 +168,10 @@ func (s *Server) acceptConnections() {
 
 			if clientCount >= maxClients {
 				s.logger.Error("Maximum clients reached (%d), rejecting connection from %s", maxClients, conn.RemoteAddr().String())
-				conn.Close()
+				err = conn.Close()
+				if err != nil {
+					s.logger.Error("Failed to close connection: %v", err)
+				}
 				continue
 			}
 
@@ -320,14 +336,14 @@ func (s *Server) tunnelReader() {
 
 				client.ephemeralPrivateServerKey = privateKey
 				packet.AddParameter("publicKey", privateKey.PublicKey().Bytes())
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, true, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
 					continue
 				}
 				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
 			} else {
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false, false)
+				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
 				if err != nil {
 					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
 					continue
@@ -353,7 +369,11 @@ func (s *Server) tunnelReader() {
 			}
 
 			if s.config.UpdateThroughSalt {
-				client.computeNextSessionSentKey(salt)
+				err = client.computeNextSessionSentKey(salt)
+				if err != nil {
+					s.logger.Error("Failed to compute next session sent key for client %s: %v", client.addr, err)
+					continue
+				}
 			}
 			client.countSent.Add(1)
 			s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent.Load())
@@ -366,7 +386,10 @@ func (s *Server) handleClient(client *Client) {
 	defer func() {
 		s.logger.Info("Stopping to handle client %s (IP: %s)", client.addr, client.localIP.String())
 		s.wg.Done()
-		client.conn.Close()
+		err := client.conn.Close()
+		if err != nil {
+			s.logger.Error("Failed to close client %s: %v", client.addr, err)
+		}
 	}()
 
 	for {
@@ -408,7 +431,11 @@ func (s *Server) handleClient(client *Client) {
 			client.countRecv.Add(1)
 			salt := packet.GetSalt()
 			if len(salt) != 0 {
-				client.computeNextSessionRecvKey(salt)
+				err = client.computeNextSessionRecvKey(salt)
+				if err != nil {
+					s.logger.Error("Failed to compute next session recv key for client %s: %v", client.addr, err)
+					return
+				}
 				s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv.Load())
 			}
 
@@ -437,8 +464,16 @@ func (s *Server) handleClient(client *Client) {
 				client.countSent.Store(0)
 				s.logger.Trace("Client %s: counters reset (recv=0, sent=0), lastRoundECDH updated", client.addr)
 
-				client.computeNextSessionSentKey(secret)
-				client.computeNextSessionRecvKey(secret)
+				err = client.computeNextSessionSentKey(secret)
+				if err != nil {
+					s.logger.Error("Failed to compute next session sent key for %s: %v", client.addr, err)
+					return
+				}
+				err = client.computeNextSessionRecvKey(secret)
+				if err != nil {
+					s.logger.Error("Failed to compute next session recv key for %s: %v", client.addr, err)
+					return
+				}
 				close(client.roundECDHLock)
 
 				s.logger.Info("ECDH rekey completed for client %s", client.addr)
@@ -526,7 +561,10 @@ func (s *Server) disconnectClient(ip string) {
 	}
 
 	client := clientAny.(*Client)
-	client.Close()
+	err := client.Close()
+	if err != nil {
+		client.logger.Error("Failed to close client %s: %v", client.addr, err)
+	}
 	s.ipPool.ReleaseIP(*client.localIP)
 	s.clients.Delete(ip)
 

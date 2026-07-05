@@ -17,15 +17,6 @@ type Tunnel interface {
 	Down(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	Close(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	IsRunning() bool
-	Stats() (*TunnelStats, error)
-}
-
-type TunnelStats struct {
-	RXBytes   uint64
-	RXPackets uint64
-	TXBytes   uint64
-	TXPackets uint64
-	LastError error
 }
 
 func NewTunnel(name string, mtu int, address net.IP, netmask net.IPMask) (tunnel Tunnel, err error) {

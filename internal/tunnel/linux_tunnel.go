@@ -19,7 +19,6 @@ type LinuxTunnel struct {
 	mtu      int
 	running  bool
 	mu       sync.RWMutex
-	stats    TunnelStats
 	oldGW    string
 	oldIface string
 }
@@ -340,26 +339,12 @@ func (t *LinuxTunnel) IsRunning() bool {
 	return t.running
 }
 
-func (t *LinuxTunnel) Stats() (*TunnelStats, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	stats := &TunnelStats{
-		RXBytes:   t.stats.RXBytes,
-		RXPackets: t.stats.RXPackets,
-		TXBytes:   t.stats.TXBytes,
-		TXPackets: t.stats.TXPackets,
-	}
-
-	return stats, nil
-}
-
 func (t *LinuxTunnel) getPrefixLen() int {
 	if t.netmask == nil {
 		return 24
 	}
-	len, _ := t.netmask.Size()
-	return len
+	prefixLen, _ := t.netmask.Size()
+	return prefixLen
 }
 
 type RouteInfo struct {

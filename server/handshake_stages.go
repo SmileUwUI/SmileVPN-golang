@@ -29,7 +29,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	usernamePacket, err := c.readPacket()
 	if err != nil {
 		c.logger.Error("Failed to read username packet from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 1: username packet received from client %s, size=%d bytes", c.addr, len(usernamePacket.GetRawData()))
@@ -37,7 +40,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	err = usernamePacket.DecodeAndDecrypt(initPassword[:])
 	if err != nil {
 		c.logger.Error("Failed to decrypt username packet from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Debug("Handshake stage 1: username packet decrypted successfully for client %s", c.addr)
@@ -45,7 +51,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	timestampBytes, err := usernamePacket.GetSlicePlainData(16, 24)
 	if err != nil {
 		c.logger.Error("Failed to get timestamp from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 
@@ -62,7 +71,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 
 	if timeDiff > 5 {
 		c.logger.Error("Invalid timestamp from client %s: diff=%d, current=%d, client=%d", c.addr, timeDiff, currentTime, timestamp)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return fmt.Errorf("invalid timestamp")
 	}
 	c.logger.Trace("Handshake stage 1: timestamp validation passed for client %s", c.addr)
@@ -70,7 +82,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	username, err := usernamePacket.GetSlicePlainData(0, 16)
 	if err != nil {
 		c.logger.Error("Failed to get username from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 
@@ -80,7 +95,10 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	user := users.GetUser([16]byte(username))
 	if user == nil {
 		c.logger.Error("User not found for client %s: username=%x", c.addr, username)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return fmt.Errorf("user not found (username: %x)", username)
 	}
 	c.logger.Trace("Handshake stage 1: user found for client %s", c.addr)
@@ -94,17 +112,23 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 
 	saltPacket := packets.NewPlainPacket()
 	saltPacket.AddData(salt)
-	err = saltPacket.PackageAssembly(initPassword[:], false, false, false)
+	err = saltPacket.PackageAssembly(initPassword[:], false, false)
 	if err != nil {
 		c.logger.Error("Failed to package salt packet for client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Debug("Handshake stage 1: salt packet assembled for client %s", c.addr)
 
 	if _, err = c.conn.Write(saltPacket.GetRawData()); err != nil {
 		c.logger.Error("Failed to send salt packet to client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 1: salt packet sent to client %s, size=%d bytes", c.addr, len(saltPacket.GetRawData()))
@@ -113,25 +137,39 @@ func (c *Client) handshakeStage1(initPassword [32]byte, users *users.Users) (err
 	firstSalt, err := saltPacket.GetSlicePlainData(0, 16)
 	if err != nil {
 		c.logger.Error("Failed to get first salt for client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 1: first salt extracted for client %s", c.addr)
 
 	c.sessionRecvKey.SetKey(password[:])
-	c.sessionRecvKey.UpdateKey(firstSalt)
+	err = c.sessionRecvKey.UpdateKey(firstSalt)
+	if err != nil {
+		c.logger.Error("Failed to update first salt for client %s: %v", c.addr, err)
+		return err
+	}
 	c.logger.Debug("Handshake stage 1: session recv key derived for client %s", c.addr)
 
 	secondSalt, err := saltPacket.GetSlicePlainData(16, 32)
 	if err != nil {
 		c.logger.Error("Failed to get second salt for client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 1: second salt extracted for client %s", c.addr)
 
 	c.sessionSentKey.SetKey(password[:])
-	c.sessionSentKey.UpdateKey(secondSalt)
+	err = c.sessionSentKey.UpdateKey(secondSalt)
+	if err != nil {
+		c.logger.Error("Failed to update second salt for client %s: %v", c.addr, err)
+		return err
+	}
 	c.logger.Debug("Handshake stage 1: session sent key derived for client %s", c.addr)
 
 	c.logger.Info("Handshake stage 1 completed for client %s", c.addr)
@@ -145,7 +183,10 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	packet, err := c.readPacket()
 	if err != nil {
 		c.logger.Error("Failed to read stage 2 packet from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 2: packet received from client %s, size=%d bytes", c.addr, len(packet.GetRawData()))
@@ -153,7 +194,10 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	err = packet.DecodeAndDecrypt(c.sessionRecvKey.GetBytes())
 	if err != nil {
 		c.logger.Error("Failed to decrypt stage 2 packet from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Debug("Handshake stage 2: packet decrypted successfully for client %s", c.addr)
@@ -161,14 +205,20 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	confirmationByte, err := packet.GetSlicePlainData(0, 1)
 	if err != nil {
 		c.logger.Error("Failed to get confirmation byte from client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 2: confirmation byte=0x%02X from client %s", confirmationByte[0], c.addr)
 
 	if confirmationByte[0] != 0xFF {
 		c.logger.Error("Client %s rejected the connection (confirmation byte: %x)", c.addr, confirmationByte[0])
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return fmt.Errorf("the client rejected the connection")
 	}
 
@@ -200,17 +250,23 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	c.logger.Trace("Handshake stage 2: IP %s added to packet for client %s", clientIP.String(), c.addr)
 
 	ipPacket.AddParameter("publicKey", publicServerKey.Bytes())
-	err = ipPacket.PackageAssembly(c.sessionSentKey.GetBytes(), false, true, false)
+	err = ipPacket.PackageAssembly(c.sessionSentKey.GetBytes(), false, false)
 	if err != nil {
 		c.logger.Error("Failed to package IP packet for client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Debug("Handshake stage 2: IP packet assembled with ECDH flag for client %s", c.addr)
 
 	if _, err = c.conn.Write(ipPacket.GetRawData()); err != nil {
 		c.logger.Error("Failed to send IP assignment to client %s: %v", c.addr, err)
-		c.conn.Close()
+		errClose := c.conn.Close()
+		if errClose != nil {
+			c.logger.Error("Failed to close client %s: %v", c.addr, err)
+		}
 		return err
 	}
 	c.logger.Trace("Handshake stage 2: IP packet sent to client %s, size=%d bytes", c.addr, len(ipPacket.GetRawData()))
@@ -225,8 +281,16 @@ func (c *Client) handshakeStage2(clientIP *net.IP) (err error) {
 	}
 	c.logger.Debug("Handshake stage 2: shared secret computed for client %s", c.addr)
 
-	c.computeNextSessionRecvKey(secret)
-	c.computeNextSessionSentKey(secret)
+	err = c.computeNextSessionRecvKey(secret)
+	if err != nil {
+		c.logger.Error("Failed to compute next session received for client %s: %v", c.addr, err)
+		return err
+	}
+	err = c.computeNextSessionSentKey(secret)
+	if err != nil {
+		c.logger.Error("Failed to compute next session sent for client %s: %v", c.addr, err)
+		return err
+	}
 	c.logger.Trace("Handshake stage 2: session keys updated with ECDH secret for client %s", c.addr)
 
 	c.logger.Info("Handshake stage 2 completed for client %s", c.addr)
