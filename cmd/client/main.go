@@ -13,15 +13,16 @@ import (
 
 func main() {
 	var (
-		usernameString     string
-		passwordString     string
-		initPasswordString string
-		host               string
-		hostName           string
-		port               int
-		loggerLevel        int
-		updateThroughSalt  bool
-		batching           bool
+		usernameString      string
+		passwordString      string
+		initPasswordString  string
+		host                string
+		hostName            string
+		port                int
+		loggerLevel         int
+		updateThroughSalt   bool
+		batching            bool
+		dropIncorrectPacket bool
 	)
 
 	flag.StringVar(&usernameString, "u", "", "Hex username (short)")
@@ -36,8 +37,11 @@ func main() {
 	flag.BoolVar(&updateThroughSalt, "U", false, "Update keys through salt (short)")
 	flag.BoolVar(&updateThroughSalt, "update-through-salt", false, "Update keys through salt")
 
-	flag.BoolVar(&updateThroughSalt, "b", false, " Group the packages into batches (short)")
-	flag.BoolVar(&updateThroughSalt, "batching", false, " Group the packages into batches")
+	flag.BoolVar(&batching, "b", false, "Group the packages into batches (short)")
+	flag.BoolVar(&batching, "batching", false, "Group the packages into batches")
+
+	flag.BoolVar(&dropIncorrectPacket, "d", true, "This flag determines what happens to packets that are not suitable for redirection (source IP is not from the VPN subnet and the packet is IPv6): if the flag is set to false, the packet is forwarded without being proxied through the VPN; if the flag is set to true, the packet is discarded (short)")
+	flag.BoolVar(&dropIncorrectPacket, "drop-incorrect-packet", true, "This flag determines what happens to packets that are not suitable for redirection (source IP is not from the VPN subnet and the packet is IPv6): if the flag is set to false, the packet is forwarded without being proxied through the VPN; if the flag is set to true, the packet is discarded")
 
 	flag.StringVar(&host, "h", "", "Host (short)")
 	flag.StringVar(&host, "host", "", "Host")
@@ -151,7 +155,7 @@ func main() {
 
 	log := logger.NewLogger(loggerLevel)
 
-	clientInstance, err := client.NewClient(host, hostName, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, batching, log)
+	clientInstance, err := client.NewClient(host, hostName, port, initPasswordArray, usernameArray, passwordArray, updateThroughSalt, batching, dropIncorrectPacket, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to create client: %v\n", err)
 		os.Exit(1)
