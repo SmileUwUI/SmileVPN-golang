@@ -3,17 +3,11 @@ package server
 import (
 	"SmileVPN/internal/crypto"
 	"SmileVPN/internal/logger"
-	"SmileVPN/internal/packets"
 	"SmileVPN/internal/tunnel"
 	"SmileVPN/server/config"
 	"SmileVPN/server/users"
-	"crypto/ecdh"
-	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"fmt"
-	"io"
-	"math"
 	"net"
 	"os/exec"
 	"reflect"
@@ -293,86 +287,14 @@ func (s *Server) tunnelReader() {
 			}
 			client := clientAny.(*Client)
 
-			if client.roundECDHLock != nil {
-				s.logger.Trace("Waiting for ECDH lock for client %s", client.addr)
-				<-client.roundECDHLock
-				s.logger.Trace("ECDH lock acquired for client %s", client.addr)
-			}
-
-			salt := []byte{}
-			if s.config.UpdateThroughSalt {
-				salt, err = crypto.RandomBytes(8)
-				if err != nil {
-					s.logger.Error("Failed to generate salt for client %s: %v", client.addr, err)
-					continue
-				}
-				s.logger.Trace("Salt generated for client %s: %x", client.addr, salt)
-
-			}
-
-			packet := packets.NewPlainPacket()
-			packet.AddData(rawPacket)
-			packet.AddParameter("salt", salt)
-
-			needsECDH := client.countSent.Load() >= uint32(math.Pow(2, 16)) || time.Since(client.lastRoundECDH) >= 4*time.Minute
-			s.logger.Trace("Client %s: countSent=%d, lastRoundECDH=%v, needsECDH=%v",
-				client.addr, client.countSent.Load(), time.Since(client.lastRoundECDH), needsECDH)
-
-			if needsECDH {
-				s.logger.Debug("Initiating ECDH rekey for client %s (countSent=%d, lastRoundECDH=%v)",
-					client.addr, client.countSent.Load(), time.Since(client.lastRoundECDH))
-
-				curve := ecdh.X25519()
-				privateKey, err := curve.GenerateKey(rand.Reader)
-				if err != nil {
-					s.logger.Error("Failed to generate ephemeral key for client %s: %v", client.addr, err)
-					continue
-				}
-				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
-
-				client.ephemeralPrivateServerKey = privateKey
-				packet.AddParameter("publicKey", privateKey.PublicKey().Bytes())
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
-				if err != nil {
-					s.logger.Error("Failed to package packet with ECDH for client %s: %v", client.addr, err)
-					continue
-				}
-				s.logger.Trace("Packet assembled with ECDH flag for client %s", client.addr)
-			} else {
-				err = packet.PackageAssembly(client.sessionSentKey.GetBytes(), false, false)
-				if err != nil {
-					s.logger.Error("Failed to package packet for client %s: %v", client.addr, err)
-					continue
-				}
-				s.logger.Trace("Packet assembled without ECDH flag for client %s", client.addr)
-			}
-
-			err = client.write(packet.GetRawData())
+			err, disconnect := client.handleTunnelPacket(rawPacket)
 			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					s.logger.Info("Client %s connection closed, releasing IP %s", client.addr, client.localIP.String())
-					s.disconnectClient(client.localIP.String())
-					continue
-				}
-				s.logger.Error("Failed to write packet to client %s: %v", client.addr, err)
-				continue
-			}
-			s.logger.Trace("Packet written to client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
-
-			if packet.GetEcdhFlag() {
-				s.logger.Debug("ECDH flag set for client %s, creating lock", client.addr)
-				client.roundECDHLock = make(chan struct{}, 1)
+				s.logger.Error("Error handling packet: %v", err)
 			}
 
-			if s.config.UpdateThroughSalt {
-				err = client.computeNextSessionSentKey(salt)
-				if err != nil {
-					s.logger.Error("Failed to compute next session sent key for client %s: %v", client.addr, err)
-					continue
-				}
+			if disconnect {
+				s.disconnectClient(client.localIP.String())
 			}
-			client.countSent.Add(1)
-			s.logger.Trace("Client %s: session sent key updated, countSent=%d", client.addr, client.countSent.Load())
 		}
 	}
 }
@@ -391,110 +313,18 @@ func (s *Server) handleClient(client *Client) {
 			s.logger.Info("Stop signal received, stopping handler for client %s", client.addr)
 			return
 		default:
-			packet, err := client.readPacket()
+			packet, err, disconnect := client.handlePacket()
 			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					s.logger.Info("Client %s connection closed (net.ErrClosed), releasing IP %s", client.addr, client.localIP.String())
-					return
-				}
-
-				if errors.Is(err, io.EOF) {
-					s.logger.Info("Client %s disconnected (EOF), releasing IP %s", client.addr, client.localIP.String())
-					return
-				}
-				s.logger.Error("Failed to read packet from client %s: %v", client.addr, err)
+				s.logger.Error("Error handling packet: %v", err)
 				continue
 			}
-			s.logger.Trace("Packet received from client %s, size=%d bytes", client.addr, len(packet.GetRawData()))
 
-			err = packet.DecodeAndDecrypt(client.sessionRecvKey.GetBytes())
-			if err != nil {
-				s.logger.Error("Failed to decrypt packet from client %s: %v", client.addr, err)
-				continue
-			}
-			s.logger.Trace("Packet decrypted successfully for client %s", client.addr)
-			if packet.GetDisconnectFlag() {
-				s.logger.Info("Client %s disconnected, releasing IP %s", client.addr, client.localIP.String())
+			if disconnect {
+				s.disconnectClient(client.localIP.String())
 				return
 			}
 
-			client.countRecv.Add(1)
-			salt := packet.GetSalt()
-			if len(salt) != 0 {
-				err = client.computeNextSessionRecvKey(salt)
-				if err != nil {
-					s.logger.Error("Failed to compute next session recv key for client %s: %v", client.addr, err)
-					return
-				}
-				s.logger.Trace("Client %s: countRecv=%d, session recv key updated", client.addr, client.countRecv.Load())
-			}
-
-			if packet.GetEcdhFlag() && client.ephemeralPrivateServerKey != nil {
-				s.logger.Debug("Processing ECDH rekey from client %s", client.addr)
-
-				curve := ecdh.X25519()
-				clientPublicKey, err := curve.NewPublicKey(packet.GetPublicKey())
-				if err != nil {
-					s.logger.Error("Failed to parse client public key for %s: %v", client.addr, err)
-					return
-				}
-				s.logger.Trace("Client public key parsed for %s", client.addr)
-
-				secret, err := client.ephemeralPrivateServerKey.ECDH(clientPublicKey)
-				if err != nil {
-					s.logger.Error("Failed to compute shared secret for client %s: %v", client.addr, err)
-					return
-				}
-				s.logger.Trace("Shared secret computed for client %s", client.addr)
-
-				client.ephemeralPrivateServerKey = nil
-				client.lastRoundECDH = time.Now()
-
-				client.countRecv.Store(0)
-				client.countSent.Store(0)
-				s.logger.Trace("Client %s: counters reset (recv=0, sent=0), lastRoundECDH updated", client.addr)
-
-				err = client.computeNextSessionSentKey(secret)
-				if err != nil {
-					s.logger.Error("Failed to compute next session sent key for %s: %v", client.addr, err)
-					return
-				}
-				err = client.computeNextSessionRecvKey(secret)
-				if err != nil {
-					s.logger.Error("Failed to compute next session recv key for %s: %v", client.addr, err)
-					return
-				}
-				client.CloseECDHLock()
-
-				s.logger.Info("ECDH rekey completed for client %s", client.addr)
-			}
-
-			client.mu.Lock()
-			client.lastActive = time.Now()
-
-			countRecv := len(packet.GetRawData())
-			if countRecv < 0 {
-				countRecv = 0
-			}
-
-			client.countRecvBytes.Add(uint32(countRecv))
-			client.mu.Unlock()
-			s.logger.Trace("Client %s: lastActive updated, countRecvBytes=%d", client.addr, client.countRecvBytes.Load())
-
-			ipSrc, err := packet.GetSlicePlainData(12, 16)
-			if err != nil {
-				s.logger.Error("Failed to get source IP from packet for client %s: %v", client.addr, err)
-				continue
-			}
-
-			srcIP := fmt.Sprintf("%d.%d.%d.%d", ipSrc[0], ipSrc[1], ipSrc[2], ipSrc[3])
-			if srcIP != client.localIP.String() {
-				s.logger.Error("Source IP mismatch for client %s: expected %s, got %s", client.addr, client.localIP.String(), srcIP)
-				continue
-			}
-			s.logger.Trace("Source IP validated for client %s: %s", client.addr, srcIP)
-
-			_, err = s.tunnel.Write(packet.GetPlainData())
+			_, err = s.tunnel.Write(packet)
 			if err != nil {
 				s.logger.Error("Failed to write packet to tunnel for client %s: %v", client.addr, err)
 				continue
