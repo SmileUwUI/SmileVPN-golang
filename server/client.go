@@ -128,7 +128,9 @@ func (c *Client) CloseECDHLock() {
 			close(c.roundECDHLock)
 		}
 	default:
-		close(c.roundECDHLock)
+		if c.roundECDHLock != nil {
+			close(c.roundECDHLock)
+		}
 	}
 }
 
