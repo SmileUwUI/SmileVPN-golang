@@ -326,7 +326,7 @@ func (s *Server) tunnelReader() {
 				privateKey, err := curve.GenerateKey(rand.Reader)
 				if err != nil {
 					s.logger.Error("Failed to generate ephemeral key for client %s: %v", client.addr, err)
-					return
+					continue
 				}
 				s.logger.Trace("Ephemeral key pair generated for client %s", client.addr)
 
@@ -395,13 +395,11 @@ func (s *Server) handleClient(client *Client) {
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					s.logger.Info("Client %s connection closed (net.ErrClosed), releasing IP %s", client.addr, client.localIP.String())
-					s.disconnectClient(client.localIP.String())
 					return
 				}
 
 				if errors.Is(err, io.EOF) {
 					s.logger.Info("Client %s disconnected (EOF), releasing IP %s", client.addr, client.localIP.String())
-					s.disconnectClient(client.localIP.String())
 					return
 				}
 				s.logger.Error("Failed to read packet from client %s: %v", client.addr, err)
@@ -417,7 +415,6 @@ func (s *Server) handleClient(client *Client) {
 			s.logger.Trace("Packet decrypted successfully for client %s", client.addr)
 			if packet.GetDisconnectFlag() {
 				s.logger.Info("Client %s disconnected, releasing IP %s", client.addr, client.localIP.String())
-				s.disconnectClient(client.localIP.String())
 				return
 			}
 
@@ -467,7 +464,7 @@ func (s *Server) handleClient(client *Client) {
 					s.logger.Error("Failed to compute next session recv key for %s: %v", client.addr, err)
 					return
 				}
-				close(client.roundECDHLock)
+				client.CloseECDHLock()
 
 				s.logger.Info("ECDH rekey completed for client %s", client.addr)
 			}

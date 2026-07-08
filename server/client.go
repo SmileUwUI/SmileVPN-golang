@@ -17,7 +17,7 @@ import (
 type Client struct {
 	addr                      string
 	conn                      *net.TCPConn
-	user                      *users.User //nolint:unus
+	user                      *users.User //nolint:unuse
 	countRecv                 atomic.Uint32
 	countSent                 atomic.Uint32
 	countRecvBytes            atomic.Uint32
@@ -121,6 +121,18 @@ func (c *Client) read(length uint16) (data []byte, err error) {
 	return data, nil
 }
 
+func (c *Client) CloseECDHLock() {
+	select {
+	case _, ok := <-c.roundECDHLock:
+		if ok {
+			close(c.roundECDHLock)
+		}
+	default:
+		close(c.roundECDHLock)
+	}
+}
+
 func (c *Client) Close() error {
+	c.CloseECDHLock()
 	return c.conn.Close()
 }
