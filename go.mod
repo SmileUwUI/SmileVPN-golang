@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/google/gopacket v1.1.19 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect

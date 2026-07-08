@@ -5,7 +5,6 @@ import (
 	"SmileVPN/internal/logger"
 	"SmileVPN/internal/packets"
 	"SmileVPN/internal/tunnel"
-	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,6 +18,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	tls "github.com/refraction-networking/utls"
 )
 
@@ -37,6 +38,7 @@ type Client struct {
 	sizeBatch                int
 	tunnel                   *tunnel.Tunnel
 	logger                   *logger.Logger
+	dropIncorrectPacket      bool
 	countRecv                uint32
 	countSent                uint32
 	updateThroughSalt        bool
@@ -48,23 +50,24 @@ type Client struct {
 	stopCh chan struct{}
 }
 
-func NewClient(host, hostName string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt, batching bool, logger *logger.Logger) (client *Client, err error) {
+func NewClient(host, hostName string, port int, initPassword [32]byte, username, password [16]byte, updateThroughSalt, batching, dropIncorrectPacket bool, logger *logger.Logger) (client *Client, err error) {
 	logger.Trace("Creating new client instance for %s:%d", host, port)
 	return &Client{
-		host:              host,
-		hostName:          hostName,
-		port:              port,
-		initPassword:      initPassword,
-		username:          username,
-		password:          password,
-		logger:            logger,
-		packetBuffer:      []*packets.StreamingPacket{},
-		updateThroughSalt: updateThroughSalt,
-		batching:          batching,
-		sessionSentKey:    crypto.NewKey(sha256.New()),
-		sessionRecvKey:    crypto.NewKey(sha256.New()),
-		sizeBatch:         1,
-		stopCh:            make(chan struct{}),
+		host:                host,
+		hostName:            hostName,
+		port:                port,
+		initPassword:        initPassword,
+		username:            username,
+		password:            password,
+		logger:              logger,
+		dropIncorrectPacket: dropIncorrectPacket,
+		packetBuffer:        []*packets.StreamingPacket{},
+		updateThroughSalt:   updateThroughSalt,
+		batching:            batching,
+		sessionSentKey:      crypto.NewKey(sha256.New()),
+		sessionRecvKey:      crypto.NewKey(sha256.New()),
+		sizeBatch:           1,
+		stopCh:              make(chan struct{}),
 	}, nil
 }
 
@@ -426,12 +429,40 @@ func (c *Client) readerTunnel() {
 		default:
 			n, err := (*c.tunnel).Read(rawPacket)
 			if err != nil {
-				if err == context.DeadlineExceeded {
-					continue
-				}
 				c.logger.Error("Error reading a packet from the tunnel: %v", err)
 				return
 			}
+			packetBytes := rawPacket[:n]
+
+			if packetBytes[0]>>4 == 6 {
+				c.logger.Trace("Reader tunnel: An IPv6 packet has been found")
+				if !c.dropIncorrectPacket {
+					_, err = (*c.tunnel).Write(packetBytes)
+					if err != nil {
+						c.logger.Error("Error writing a packet to the tunnel: %v", err)
+					}
+				}
+				continue
+			}
+
+			ipLayer := &layers.IPv4{}
+			err = ipLayer.DecodeFromBytes(packetBytes, gopacket.NilDecodeFeedback)
+			if err != nil {
+				c.logger.Error("Error decoding the packet: %v", err)
+				continue
+			}
+
+			if ipLayer.SrcIP.String() != (*c.tunnel).GetIP().String() {
+				c.logger.Trace("Reader tunnel: packet received from IP address not matching client IP")
+				if !c.dropIncorrectPacket {
+					_, err = (*c.tunnel).Write(packetBytes)
+					if err != nil {
+						c.logger.Error("Error writing a packet to the tunnel: %v", err)
+					}
+				}
+				continue
+			}
+
 			c.countSent++
 			c.logger.Trace("Reader tunnel: packet read from tunnel, size=%d bytes, countSent=%d", n, c.countSent)
 
@@ -448,7 +479,7 @@ func (c *Client) readerTunnel() {
 			}
 			c.logger.Trace("Reader tunnel: salt generated (8 bytes)")
 
-			packet.AddData(rawPacket[:n])
+			packet.AddData(packetBytes)
 			packet.AddParameter("salt", salt)
 
 			if c.ephemeralPublicClientKey != nil {

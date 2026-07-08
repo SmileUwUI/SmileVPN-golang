@@ -13,6 +13,7 @@ type Tunnel interface {
 	Netmask() net.IPMask
 	MTU() int
 	SetIP(ip net.IP, netmask net.IPMask) error
+	GetIP() net.IP
 	Up(excludeIPs []string, setDefaultRoute, createNAT, clearConntrack bool) error
 	Down(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	Close(deleteNAT, delDefaultRoute, clearConntrack bool) error

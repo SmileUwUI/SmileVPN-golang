@@ -117,6 +117,12 @@ func (t *LinuxTunnel) SetIP(ip net.IP, netmask net.IPMask) error {
 	return nil
 }
 
+func (t *LinuxTunnel) GetIP() net.IP {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.ip
+}
+
 func (t *LinuxTunnel) SetMTU(mtu int) error {
 	cmd := exec.Command("ip", "link", "set", "dev", t.name, "mtu", fmt.Sprintf("%d", mtu))
 	if err := cmd.Run(); err != nil {
