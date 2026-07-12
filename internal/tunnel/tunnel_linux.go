@@ -23,6 +23,10 @@ type LinuxTunnel struct {
 	oldIface string
 }
 
+func NewTunnel(name string, mtu int, address net.IP, netmask net.IPMask) (Tunnel, error) {
+	return NewLinuxTunnel(name, mtu, address, netmask)
+}
+
 func NewLinuxTunnel(name string, mtu int, address net.IP, netmask net.IPMask) (Tunnel, error) {
 	waterConfig := water.Config{
 		DeviceType: water.TUN,
@@ -115,12 +119,6 @@ func (t *LinuxTunnel) SetIP(ip net.IP, netmask net.IPMask) error {
 	t.ip = ip
 	t.netmask = netmask
 	return nil
-}
-
-func (t *LinuxTunnel) GetIP() net.IP {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.ip
 }
 
 func (t *LinuxTunnel) SetMTU(mtu int) error {

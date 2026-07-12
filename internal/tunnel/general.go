@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"net"
-	"runtime"
 )
 
 type Tunnel interface {
@@ -13,20 +12,10 @@ type Tunnel interface {
 	Netmask() net.IPMask
 	MTU() int
 	SetIP(ip net.IP, netmask net.IPMask) error
-	GetIP() net.IP
 	Up(excludeIPs []string, setDefaultRoute, createNAT, clearConntrack bool) error
 	Down(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	Close(deleteNAT, delDefaultRoute, clearConntrack bool) error
 	IsRunning() bool
-}
-
-func NewTunnel(name string, mtu int, address net.IP, netmask net.IPMask) (tunnel Tunnel, err error) {
-	switch runtime.GOOS {
-	case "linux":
-		return NewLinuxTunnel(name, mtu, address, netmask)
-	default:
-		return nil, nil
-	}
 }
 
 func IPs(cidr string) ([]net.IP, error) {

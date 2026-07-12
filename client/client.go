@@ -452,7 +452,7 @@ func (c *Client) readerTunnel() {
 				continue
 			}
 
-			if ipLayer.SrcIP.String() != (*c.tunnel).GetIP().String() {
+			if ipLayer.SrcIP.String() != (*c.tunnel).IP().String() {
 				c.logger.Trace("Reader tunnel: packet received from IP address not matching client IP")
 				if !c.dropIncorrectPacket {
 					_, err = (*c.tunnel).Write(packetBytes)
